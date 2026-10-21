@@ -1,0 +1,47 @@
+{
+  "name": "get-shit-done-antigravity",
+  "version": "1.0.9",
+  "description": "A spec-driven development workflow system for Antigravity — ported from Get Shit Done",
+  "main": "bin/gsd-tools.js",
+  "bin": {
+    "get-shit-done-antigravity": "bin/install.js",
+    "gsd-tools": "bin/gsd-tools.js",
+    "gsd": "bin/gsd-tools.js"
+  },
+  "scripts": {
+    "install-global": "node bin/install.js --global",
+    "install-local": "node bin/install.js --local",
+    "status": "node bin/gsd-tools.js status",
+    "health": "node bin/gsd-tools.js health"
+  },
+  "author": "KhanXBT",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KhanXBT/get-shit-done-antigravity.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KhanXBT/get-shit-done-antigravity/issues"
+  },
+  "homepage": "https://github.com/KhanXBT/get-shit-done-antigravity#readme",
+  "keywords": [
+    "gsd",
+    "get-shit-done",
+    "antigravity",
+    "ai-coding",
+    "spec-driven-development",
+    "context-engineering",
+    "deepmind",
+    "ai-workflows",
+    "meta-prompting",
+    "vibecoding"
+  ],
+  "based_on": {
+    "name": "get-shit-done-cc",
+    "version": "1.20.4",
+    "url": "https://github.com/gsd-build/get-shit-done"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
