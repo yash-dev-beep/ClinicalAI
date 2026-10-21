@@ -42,3 +42,10 @@ desktop.ini
 .vscode/
 .idea/
 .gemini/
+
+# Antigravity agent workflows & local dev configs
+.agent/
+.agents/
+AGENTS.md
+test_ui.py
+
