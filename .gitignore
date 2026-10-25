@@ -48,4 +48,5 @@ desktop.ini
 .agents/
 AGENTS.md
 test_ui.py
+cloudflared.exe
 
