@@ -19,10 +19,11 @@ load_dotenv()
 
 FALLBACK_MODELS = [
     "gemini-flash-latest",
+    "gemini-2.5-flash",
     "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-pro-latest",
-    "gemini-2.5-flash-lite"
+    "gemini-pro-latest"
 ]
 
 def get_gemini_client() -> genai.Client:
@@ -31,6 +32,59 @@ def get_gemini_client() -> genai.Client:
     if not api_key:
         raise ValueError("GEMINI_API_KEY is missing. Please check your .env file or Streamlit secrets.")
     return genai.Client(api_key=api_key)
+
+def robust_json_loads(raw_text: str) -> Dict[str, Any]:
+    """
+    Safely parses JSON output from Gemini models, automatically handling markdown fences,
+    unintended whitespace, or surrounding narrative text.
+    """
+    cleaned = raw_text.strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # Strip markdown backticks
+    clean = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+
+    # Search for outermost JSON object { ... }
+    match_obj = re.search(r"(\{.*\})", cleaned, flags=re.DOTALL)
+    if match_obj:
+        try:
+            return json.loads(match_obj.group(1))
+        except Exception:
+            pass
+
+    # Search for outermost JSON array [ ... ]
+    match_arr = re.search(r"(\[.*\])", cleaned, flags=re.DOTALL)
+    if match_arr:
+        try:
+            return json.loads(match_arr.group(1))
+        except Exception:
+            pass
+
+    # Remove non-whitespace control characters (\x00-\x08, \x0b, \x0c, \x0e-\x1f)
+    sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", clean)
+    try:
+        return json.loads(sanitized)
+    except Exception:
+        pass
+
+    # Fallback to ast.literal_eval for single-quoted Python dict representations from fallback LLMs
+    try:
+        import ast
+        val = ast.literal_eval(clean)
+        if isinstance(val, (dict, list)):
+            return val
+    except Exception:
+        pass
+
+    raise ValueError(f"Could not parse valid JSON from model response: {raw_text[:200]}...")
+
 
 def generate_resilient_content(
     prompt: str,
@@ -62,8 +116,16 @@ def generate_resilient_content(
                     contents=prompt,
                     config=config
                 )
-                if response and response.text:
-                    return response.text.strip()
+                if response:
+                    txt = getattr(response, "text", None)
+                    if txt and str(txt).strip():
+                        return str(txt).strip()
+                    if hasattr(response, "candidates") and response.candidates:
+                        for cand in response.candidates:
+                            if hasattr(cand, "content") and cand.content and cand.content.parts:
+                                parts_text = "".join([getattr(p, "text", "") or "" for p in cand.content.parts])
+                                if parts_text.strip():
+                                    return parts_text.strip()
             except Exception as e:
                 last_error = e
                 time.sleep(0.6)
@@ -131,8 +193,12 @@ def extract_text_from_pdf(pdf_stream_or_bytes) -> str:
     Handles file-like objects, multiple uploads, or raw bytes gracefully.
     """
     try:
+        if hasattr(pdf_stream_or_bytes, "seek"):
+            pdf_stream_or_bytes.seek(0)
         if hasattr(pdf_stream_or_bytes, "read"):
             data = pdf_stream_or_bytes.read()
+        elif hasattr(pdf_stream_or_bytes, "getvalue"):
+            data = pdf_stream_or_bytes.getvalue()
         else:
             data = pdf_stream_or_bytes
 
@@ -202,11 +268,7 @@ Extract all quantitative laboratory test metrics and report date according to th
         temperature=0.0
     )
 
-    try:
-        return json.loads(raw_response)
-    except Exception:
-        clean = re.sub(r"^```(?:json)?|```$", "", raw_response.strip(), flags=re.MULTILINE).strip()
-        return json.loads(clean)
+    return robust_json_loads(raw_response)
 
 def generate_health_alerts(
     metrics: List[Dict[str, Any]],
@@ -254,11 +316,7 @@ Generate a clear, gentle health alert summary evaluating what to watch out for a
         temperature=0.2
     )
 
-    try:
-        return json.loads(raw_response)
-    except Exception:
-        clean = re.sub(r"^```(?:json)?|```$", "", raw_response.strip(), flags=re.MULTILINE).strip()
-        return json.loads(clean)
+    return robust_json_loads(raw_response)
 
 def generate_narrative_synthesis(
     metrics: List[Dict[str, Any]],
@@ -338,11 +396,7 @@ Formulate an easy-to-eat, wholesome daily meal plan (Morning, Midday, Evening) a
         temperature=0.3
     )
 
-    try:
-        return json.loads(raw_response)
-    except Exception:
-        clean = re.sub(r"^```(?:json)?|```$", "", raw_response.strip(), flags=re.MULTILINE).strip()
-        return json.loads(clean)
+    return robust_json_loads(raw_response)
 
 # =========================================================================
 # Concurrency Engine (ThreadPoolExecutor)
@@ -550,7 +604,7 @@ Provide a conversational reply at a 5th-grade reading level, and if a change was
             response_schema=DietCustomizationResult,
             temperature=0.3
         )
-        parsed = json.loads(raw_res)
+        parsed = robust_json_loads(raw_res)
         reply = parsed.get("reply_message", "Here are your meal updates!")
         
         updated_plan = None

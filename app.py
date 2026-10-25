@@ -882,15 +882,15 @@ for _lang_k, _extra_dict in CUISINE_TRANSLATIONS.items():
     if _lang_k in TRANSLATIONS:
         TRANSLATIONS[_lang_k].update(_extra_dict)
 
-if "translations" not in st.session_state:
-    st.session_state.translations = TRANSLATIONS
+st.session_state.translations = TRANSLATIONS
 
 def t(key: str) -> str:
     """Returns the translation for the given key based on current language stored in session state."""
     lang = st.session_state.get("lang", "English 🇺🇸")
-    trans_dict = st.session_state.get("translations", TRANSLATIONS)
+    trans_dict = TRANSLATIONS
     dict_for_lang = trans_dict.get(lang, trans_dict.get("English 🇺🇸", {}))
     return dict_for_lang.get(key, trans_dict.get("English 🇺🇸", {}).get(key, key))
+
 
 # =========================================================================
 # Session State Initialization
@@ -945,17 +945,13 @@ if not st.session_state.authenticated and not st.session_state.get("logged_out",
                 st.session_state.authenticated = True
                 if persisted_u.get("preferred_language") in TRANSLATIONS:
                     st.session_state.lang = persisted_u["preferred_language"]
-                    st.session_state["top_lang_select"] = persisted_u["preferred_language"]
-                    st.session_state["login_lang_dropdown"] = persisted_u["preferred_language"]
         except Exception:
             pass
 
 def change_language(new_lang: str):
-    """Synchronizes language across app state, widgets, and user record."""
+    """Synchronizes language across app state and user record."""
     if new_lang in TRANSLATIONS:
         st.session_state.lang = new_lang
-        st.session_state["login_lang_dropdown"] = new_lang
-        st.session_state["top_lang_select"] = new_lang
         if st.session_state.get("user"):
             try:
                 database.update_user_language(st.session_state.user["id"], new_lang)
@@ -1011,7 +1007,7 @@ def render_login_screen():
         "Select Language / भाषा चुनें",
         options=[item["name"] for item in LANG_LIST],
         index=cur_idx,
-        key="login_lang_dropdown",
+        key=f"login_lang_{st.session_state.lang}",
         label_visibility="collapsed"
     )
     if dropdown_lang != st.session_state.lang:
@@ -1158,7 +1154,7 @@ def render_top_header():
             "Language",
             options=[item["name"] for item in LANG_LIST],
             index=idx,
-            key="top_lang_select",
+            key=f"top_lang_{st.session_state.lang}",
             label_visibility="collapsed"
         )
         if new_lang != st.session_state.lang:
