@@ -5,7 +5,7 @@ import json
 import re
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 import extra_streamlit_components as stx
 
 import database
@@ -671,6 +671,217 @@ TRANSLATIONS = {
     }
 }
 
+CUISINE_TRANSLATIONS = {
+    "English 🇺🇸": {
+        "choose_cuisine_header": "🍽️ Choose a Cuisine Style:",
+        "selected_btn": "Selected",
+        "select_btn": "Select",
+        "selected_lbl": "Selected Cuisine:",
+        "cuisine_roti_desc": "Classic Desi Indian: soft rotis, yellow moong daal, tender paneer & light vegetables",
+        "cuisine_south_desc": "Steamed idlis, comforting sambar, gentle rasam & tender greens",
+        "cuisine_med_desc": "Olive oil, soft lentils, stewed vegetables & mild fish",
+        "cuisine_diabetic_desc": "Low sugar, high fiber & steady-energy gentle meals",
+        "cuisine_heart_desc": "Low salt, tender steamed meals & potassium-rich broths",
+        "daily_meal_guide": "Daily Meal Guide",
+        "chewing_digestion_advice": "Easy Chewing & Digestion Advice",
+        "wholesome_foods_daily": "Wholesome Foods to Enjoy Daily",
+        "foods_to_limit": "Foods to Limit",
+        "upload_report_first": "Please upload a health test report first so we can tailor meals to your body's needs.",
+        "plan_ready_msg": "Your customized meal plan is ready!"
+    },
+    "Hindi (हिंदी) 🇮🇳": {
+        "choose_cuisine_header": "🍽️ भोजन शैली चुनें:",
+        "selected_btn": "चुना गया",
+        "select_btn": "चुनें",
+        "selected_lbl": "चुना गया भोजन:",
+        "cuisine_roti_desc": "नरम रोटियां, मूंग दाल, पनीर और हल्की सुपाच्य सब्जियां",
+        "cuisine_south_desc": "भाप में पकी इडली, हल्का सांभर, रसम और हरी सब्जियां",
+        "cuisine_med_desc": "जैतून का तेल, हल्की दालें, उबली सब्जियां और हल्का भोजन",
+        "cuisine_diabetic_desc": "कम चीनी, भरपूर फाइबर और ऊर्जा देने वाला संतुलित आहार",
+        "cuisine_heart_desc": "कम नमक, हल्की उबली हुई सब्जियां और हृदय के लिए पौष्टिक सूप",
+        "daily_meal_guide": "दैनिक भोजन मार्गदर्शिका",
+        "chewing_digestion_advice": "चबाने व पचाने में आसान बनाने की सलाह",
+        "wholesome_foods_daily": "रोज़ाना खाने योग्य पौष्टिक व सुपाच्य आहार",
+        "foods_to_limit": "सीमित मात्रा में खाने या परहेज करने योग्य चीजें",
+        "upload_report_first": "कृपया पहले अपनी स्वास्थ्य रिपोर्ट अपलोड करें ताकि हम आपके शरीर के अनुकूल आहार बना सकें।",
+        "plan_ready_msg": "आपकी व्यक्तिगत भोजन योजना तैयार है!"
+    },
+    "Punjabi (ਪੰਜਾਬੀ)": {
+        "choose_cuisine_header": "🍽️ ਖਾਣੇ ਦੀ ਸ਼ੈਲੀ ਚੁਣੋ:",
+        "selected_btn": "ਚੁਣਿਆ ਗਿਆ",
+        "select_btn": "ਚੁਣੋ",
+        "selected_lbl": "ਚੁਣਿਆ ਗਿਆ ਖਾਣਾ:",
+        "cuisine_roti_desc": "ਨਰਮ ਰੋਟੀਆਂ, ਮੂੰਗੀ ਦੀ ਦਾਲ, ਪਨੀਰ ਅਤੇ ਹਲਕੀਆਂ ਸਬਜ਼ੀਆਂ",
+        "cuisine_south_desc": "ਭਾਫ਼ ਵਾਲੀ ਇਡਲੀ, ਸਾਂਭਰ, ਰਸਮ ਅਤੇ ਹਰੀਆਂ ਸਬਜ਼ੀਆਂ",
+        "cuisine_med_desc": "ਜੈਤੂਨ ਦਾ ਤੇਲ, ਦਾਲਾਂ, ਉਬਲੀਆਂ ਸਬਜ਼ੀਆਂ ਅਤੇ ਹਲਕਾ ਭੋਜਨ",
+        "cuisine_diabetic_desc": "ਘੱਟ ਖੰਡ, ਉੱਚ ਫਾਈਬਰ ਅਤੇ ਸੰਤੁਲਿਤ ਭੋਜਨ",
+        "cuisine_heart_desc": "ਘੱਟ ਲੂਣ, ਹਲਕਾ ਭੋਜਨ ਅਤੇ ਦਿਲ ਲਈ ਚੰਗਾ ਸੂਪ",
+        "daily_meal_guide": "ਰੋਜ਼ਾਨਾ ਭੋਜਨ ਗਾਈਡ",
+        "chewing_digestion_advice": "ਚਬਾਉਣ ਅਤੇ ਪਚਾਉਣ ਵਿੱਚ ਆਸਾਨ ਬਣਾਉਣ ਦੀ ਸਲਾਹ",
+        "wholesome_foods_daily": "ਰੋਜ਼ਾਨਾ ਖਾਣ ਵਾਲੇ ਪੌਸ਼ਟਿਕ ਭੋਜਨ",
+        "foods_to_limit": "ਪਰਹੇਜ਼ ਕਰਨ ਵਾਲੀਆਂ ਚੀਜ਼ਾਂ",
+        "upload_report_first": "ਕਿਰਪਾ ਕਰਕੇ ਪਹਿਲਾਂ ਆਪਣੀ ਰਿਪੋਰਟ ਅਪਲੋਡ ਕਰੋ।",
+        "plan_ready_msg": "ਤੁਹਾਡੀ ਭੋਜਨ ਯੋਜਨਾ ਤਿਆਰ ਹੈ!"
+    },
+    "Bengali (বাংলা)": {
+        "choose_cuisine_header": "🍽️ খাবারের ধরন বেছে নিন:",
+        "selected_btn": "নির্বাচিত",
+        "select_btn": "নির্বাচন করুন",
+        "selected_lbl": "নির্বাচিত খাবার:",
+        "cuisine_roti_desc": "নরম রুটি, মুগ ডাল, পনির ও সহজপাচ্য শাকসবজি",
+        "cuisine_south_desc": "নরম ইডলি, স্বাস্থ্যকর সম্বর, হালকা রসম ও শাকসবজি",
+        "cuisine_med_desc": "অলিভ অয়েল, নরম ডাল, সেদ্ধ সবজি ও হালকা মাছ",
+        "cuisine_diabetic_desc": "কম চিনি, উচ্চ ফাইবার ও শক্তির ভারসাম্য বজায় রাখার খাবার",
+        "cuisine_heart_desc": "কম লবণ, নরম সেদ্ধ খাবার ও পটাসিয়াম সমৃদ্ধ স্যুপ",
+        "daily_meal_guide": "দৈনিক খাদ্য নির্দেশিকা",
+        "chewing_digestion_advice": "সহজ চিবানো ও হজমের পরামর্শ",
+        "wholesome_foods_daily": "প্রতিদিন খাওয়ার মতো পুষ্টিকর খাবার",
+        "foods_to_limit": "যেসব খাবার এড়িয়ে চলবেন",
+        "upload_report_first": "দয়া করে প্রথমে আপনার রিপোর্ট আপলোড করুন।",
+        "plan_ready_msg": "আপনার খাবারের পরিকল্পনা প্রস্তুত!"
+    },
+    "Marathi (मराठी)": {
+        "choose_cuisine_header": "🍽️ जेवणाची शैली निवडा:",
+        "selected_btn": "निवडले",
+        "select_btn": "निवडा",
+        "selected_lbl": "निवडलेले जेवण:",
+        "cuisine_roti_desc": "मऊ पोळ्या, मुगाची डाळ, पनीर व पचायला हलक्या भाज्या",
+        "cuisine_south_desc": "मऊ इडली, सांबार, हलके रसम व पालेभाज्या",
+        "cuisine_med_desc": "ऑलिव्ह तेल, डाळी, शिजवलेल्या भाज्या व हलके अन्न",
+        "cuisine_diabetic_desc": "कमी साखर, भरपूर फायबर आणि संतुलित आहार",
+        "cuisine_heart_desc": "कमी मीठ, उकडलेल्या भाज्या व हृदयासाठी उपयुक्त सूप",
+        "daily_meal_guide": "दैनिक जेवण मार्गदर्शक",
+        "chewing_digestion_advice": "चावण्यास व पचनास हलके ठेवण्याचा सल्ला",
+        "wholesome_foods_daily": "दररोज खाण्यासाठी पौष्टिक पदार्थ",
+        "foods_to_limit": "कमी प्रमाणात खाण्याचे पदार्थ",
+        "upload_report_first": "कृपया प्रथम तुमचा तपासणी अहवाल अपलोड करा.",
+        "plan_ready_msg": "तुमची जेवण योजना तयार आहे!"
+    },
+    "Tamil (தமிழ்)": {
+        "choose_cuisine_header": "🍽️ உணவு முறையைத் தேர்வுசெய்க:",
+        "selected_btn": "தேர்ந்தெடுக்கப்பட்டது",
+        "select_btn": "தேர்வு செய்க",
+        "selected_lbl": "தேர்ந்தெடுக்கப்பட்ட உணவு:",
+        "cuisine_roti_desc": "மென்மையான சப்பாத்தி, பாசிப்பருப்பு, பனீர் மற்றும் காய்கறிகள்",
+        "cuisine_south_desc": "மென்மையான இட்லி, சாம்பார், ரசம் மற்றும் கீரைகள்",
+        "cuisine_med_desc": "ஆலிவ் எண்ணெய், மென்மையான பருப்பு, காய்கறிகள் மற்றும் மீன்",
+        "cuisine_diabetic_desc": "குறைந்த சர்க்கரை, அதிக நார்ச்சத்து மற்றும் சீரான உணவு",
+        "cuisine_heart_desc": "குறைந்த உப்பு, வேகவைத்த உணவு மற்றும் சத்தான சூப்",
+        "daily_meal_guide": "தினசரி உணவு வழிகாட்டி",
+        "chewing_digestion_advice": "எளிதில் மெல்லவும் செரிக்கவும் ஆலோசனை",
+        "wholesome_foods_daily": "தினமும் சாப்பிடக்கூடிய சத்தான உணவுகள்",
+        "foods_to_limit": "தவிர்க்க வேண்டிய உணவுகள்",
+        "upload_report_first": "தயவுசெய்து முதலில் உங்கள் மருத்துவ அறிக்கையைப் பதிவேற்றவும்.",
+        "plan_ready_msg": "உங்கள் உணவுத் திட்டம் தயாராக உள்ளது!"
+    },
+    "Telugu (తెలుగు)": {
+        "choose_cuisine_header": "🍽️ ఆహార శైలిని ఎంచుకోండి:",
+        "selected_btn": "ఎంపిక చేయబడింది",
+        "select_btn": "ఎంచుకోండి",
+        "selected_lbl": "ఎంపిక చేసిన ఆహారం:",
+        "cuisine_roti_desc": "మెత్తని రొట్టెలు, పెసరపప్పు, పన్నీర్ మరియు తేలికపాటి కూరగాయలు",
+        "cuisine_south_desc": "మెత్తని ఇడ్లీలు, సాంబారు, రసం మరియు ఆకుకూరలు",
+        "cuisine_med_desc": "ఆలివ్ నూనె, మెత్తని పప్పులు, ఉడికించిన కూరగాయలు",
+        "cuisine_diabetic_desc": "తక్కువ చక్కెర, ఎక్కువ ఫైబర్ మరియు సమతుల్య ఆహారం",
+        "cuisine_heart_desc": "తక్కువ ఉప్పు, ఉడికించిన ఆహారం మరియు గుండెకు మేలు చేసే సూప్‌లు",
+        "daily_meal_guide": "రోజువారీ ఆహార మార్గదర్శి",
+        "chewing_digestion_advice": "సులభంగా నమలడం మరియు జీర్ణం చేసుకోవడానికి సలహా",
+        "wholesome_foods_daily": "రోజూ తినదగిన పోషక ఆహారాలు",
+        "foods_to_limit": "పరిమితం చేయవలసిన ఆహారాలు",
+        "upload_report_first": "దయచేసి మొదట మీ వైద్య నివేదికను అప్‌లోడ్ చేయండి.",
+        "plan_ready_msg": "మీ ఆహార ప్రణాళిక సిద్ధంగా ఉంది!"
+    },
+    "Gujarati (ગુજરાતી)": {
+        "choose_cuisine_header": "🍽️ ભોજન શૈલી પસંદ કરો:",
+        "selected_btn": "પસંદ કરેલ",
+        "select_btn": "પસંદ કરો",
+        "selected_lbl": "પસંદ કરેલ ભોજન:",
+        "cuisine_roti_desc": "નરમ રોટલી, મગની દાળ, પનીર અને હળવા શાકભાજી",
+        "cuisine_south_desc": "પોચી ઇડલી, સંભાર, રસમ અને હળવા શાકભાજી",
+        "cuisine_med_desc": "ઓલિવ તેલ, દાળ, બાફેલી શાકભાજી અને હળવો આહાર",
+        "cuisine_diabetic_desc": "ઓછી ખાંડ, વધુ ફાઇબર અને સંતુલિત આહાર",
+        "cuisine_heart_desc": "ઓછું મીઠું, બાફેલો આહાર અને હૃદય માટે પૌષ્ટિક સૂપ",
+        "daily_meal_guide": "દૈનિક આહાર માર્ગદર્શિકા",
+        "chewing_digestion_advice": "સરળતાથી ચાવવા અને પચાવવાની સલાહ",
+        "wholesome_foods_daily": "રોજ ખાવા યોગ્ય પૌષ્ટિક આહાર",
+        "foods_to_limit": "મર્યાદિત રાખવાના ખોરાક",
+        "upload_report_first": "કૃપા કરીને પહેલા તમારો રિપોર્ટ અપલોડ કરો.",
+        "plan_ready_msg": "તમારી આહાર યોજના તૈયાર છે!"
+    },
+    "Spanish (Español) 🇪🇸": {
+        "choose_cuisine_header": "🍽️ Elige un Estilo de Cocina:",
+        "selected_btn": "Seleccionado",
+        "select_btn": "Seleccionar",
+        "selected_lbl": "Cocina seleccionada:",
+        "cuisine_roti_desc": "Rotis suaves, lentejas amarillas, paneer tierno y verduras ligeras",
+        "cuisine_south_desc": "Idlis al vapor, sambar reconfortante, rasam suave y verduras",
+        "cuisine_med_desc": "Aceite de oliva, lentejas tiernas, verduras guisadas y pescado suave",
+        "cuisine_diabetic_desc": "Bajo en azúcar, rico en fibra y energía constante",
+        "cuisine_heart_desc": "Bajo en sal, platos al vapor tiernos y caldos reconfortantes",
+        "daily_meal_guide": "Guía de Comidas Diarias",
+        "chewing_digestion_advice": "Consejos para Masticar y Digerir Fácilmente",
+        "wholesome_foods_daily": "Alimentos Saludables para Disfrutar a Diario",
+        "foods_to_limit": "Alimentos a Limitar",
+        "upload_report_first": "Por favor sube primero tu informe médico para personalizar tus comidas.",
+        "plan_ready_msg": "¡Tu plan de comidas personalizado está listo!"
+    },
+    "French (Français) 🇫🇷": {
+        "choose_cuisine_header": "🍽️ Choisissez un style de cuisine :",
+        "selected_btn": "Sélectionné",
+        "select_btn": "Sélectionner",
+        "selected_lbl": "Cuisine sélectionnée :",
+        "cuisine_roti_desc": "Rotis moelleux, lentilles douces, paneer tendre et légumes cuits",
+        "cuisine_south_desc": "Idlis vapeur, sambar réconfortant, rasam doux et légumes verts",
+        "cuisine_med_desc": "Huile d'olive, lentilles fondantes, légumes mijotés et poisson doux",
+        "cuisine_diabetic_desc": "Pauvre en sucres, riche en fibres et énergie équilibrée",
+        "cuisine_heart_desc": "Faible en sel, plats vapeur tendres et bouillons riches",
+        "daily_meal_guide": "Guide des repas quotidiens",
+        "chewing_digestion_advice": "Conseils pour une mastication et digestion faciles",
+        "wholesome_foods_daily": "Aliments sains à savourer chaque jour",
+        "foods_to_limit": "Aliments à limiter",
+        "upload_report_first": "Veuillez d'abord télécharger un rapport médical.",
+        "plan_ready_msg": "Votre plan de repas personnalisé est prêt !"
+    },
+    "Mandarin (中文) 🇨🇳": {
+        "choose_cuisine_header": "🍽️ 选择餐食风味与风格：",
+        "selected_btn": "已选择",
+        "select_btn": "选择",
+        "selected_lbl": "已选餐食风格：",
+        "cuisine_roti_desc": "软全麦薄饼、黄扁豆汤、温和奶酪与清淡蔬菜",
+        "cuisine_south_desc": "清蒸米糕、温和扁豆蔬菜汤、开胃清汤与软嫩时蔬",
+        "cuisine_med_desc": "初榨橄榄油、软烂小扁豆、炖蔬菜与清蒸嫩鱼",
+        "cuisine_diabetic_desc": "低升糖指数、丰富膳食纤维与平稳能量餐食",
+        "cuisine_heart_desc": "低钠控盐、软嫩清蒸时蔬与高钾温润靓汤",
+        "daily_meal_guide": "每日营养餐食指南",
+        "chewing_digestion_advice": "软烂易嚼与好消化建议",
+        "wholesome_foods_daily": "适合每日食用的健康营养食材",
+        "foods_to_limit": "建议少吃或控制的食物",
+        "upload_report_first": "请先上传体检或化验单报告。",
+        "plan_ready_msg": "您的专属营养餐食计划已生成！"
+    },
+    "Arabic (العربية) 🇸🇦": {
+        "choose_cuisine_header": "🍽️ اختر نمط ونوع الوجبات:",
+        "selected_btn": "تم الاختيار",
+        "select_btn": "اختيار",
+        "selected_lbl": "نوع الوجبة المختار:",
+        "cuisine_roti_desc": "خبز روتي طري، عدس أصفر دافئ، جبن خفيف وخضار مطهوة",
+        "cuisine_south_desc": "إدلي طري على البخار، شوربة عدس دافئة، وخضار لينة",
+        "cuisine_med_desc": "زيت زيتون، عدس طري، خضار مطهوة على نار هادئة وأسماك خفيفة",
+        "cuisine_diabetic_desc": "قليل السكر، غني بالألياف الغذائية ومتوازن للطاقة",
+        "cuisine_heart_desc": "قليل الصوديوم، وجبات طرية على البخار وحساء غني بالبوتاسيوم",
+        "daily_meal_guide": "دليل الوجبات اليومية",
+        "chewing_digestion_advice": "نصائح لتسهيل المضغ والهضم",
+        "wholesome_foods_daily": "أطعمة صحية ومفيدة يُنصح بها يومياً",
+        "foods_to_limit": "أطعمة يُفضل التقليل منها",
+        "upload_report_first": "يرجى رفع تقرير الفحوصات الطبية أولاً لتخصيص الوجبات.",
+        "plan_ready_msg": "خطة وجباتك المخصصة جاهزة الآن!"
+    }
+}
+
+for _lang_k, _extra_dict in CUISINE_TRANSLATIONS.items():
+    if _lang_k in TRANSLATIONS:
+        TRANSLATIONS[_lang_k].update(_extra_dict)
+
 if "translations" not in st.session_state:
     st.session_state.translations = TRANSLATIONS
 
@@ -698,7 +909,7 @@ if "active_nav" not in st.session_state:
     st.session_state.active_nav = "trends"
 
 if "active_cuisine" not in st.session_state:
-    st.session_state.active_cuisine = "Roti, Daal and Paneer (Desi Indian)"
+    st.session_state.active_cuisine = "roti_daal"
 
 if "active_diet_plan" not in st.session_state:
     st.session_state.active_diet_plan = None
@@ -718,12 +929,15 @@ if "chat_history_trends" not in st.session_state:
 if "chat_history_diet" not in st.session_state:
     st.session_state.chat_history_diet = []
 
+if "logged_out" not in st.session_state:
+    st.session_state.logged_out = False
+
 # Persistent Cookie Session
 cookie_manager = stx.CookieManager(key="clinical_cookie_store")
 
-if not st.session_state.authenticated:
+if not st.session_state.authenticated and not st.session_state.get("logged_out", False):
     cached_uid = cookie_manager.get("clinical_auth_uid")
-    if cached_uid:
+    if cached_uid and str(cached_uid).strip():
         try:
             persisted_u = database.get_user_by_id(int(cached_uid))
             if persisted_u:
@@ -731,8 +945,22 @@ if not st.session_state.authenticated:
                 st.session_state.authenticated = True
                 if persisted_u.get("preferred_language") in TRANSLATIONS:
                     st.session_state.lang = persisted_u["preferred_language"]
+                    st.session_state["top_lang_select"] = persisted_u["preferred_language"]
+                    st.session_state["login_lang_dropdown"] = persisted_u["preferred_language"]
         except Exception:
             pass
+
+def change_language(new_lang: str):
+    """Synchronizes language across app state, widgets, and user record."""
+    if new_lang in TRANSLATIONS:
+        st.session_state.lang = new_lang
+        st.session_state["login_lang_dropdown"] = new_lang
+        st.session_state["top_lang_select"] = new_lang
+        if st.session_state.get("user"):
+            try:
+                database.update_user_language(st.session_state.user["id"], new_lang)
+            except Exception:
+                pass
 
 # =========================================================================
 # Elderly-Friendly UI Compaction CSS
@@ -787,7 +1015,7 @@ def render_login_screen():
         label_visibility="collapsed"
     )
     if dropdown_lang != st.session_state.lang:
-        st.session_state.lang = dropdown_lang
+        change_language(dropdown_lang)
         st.rerun()
 
     # Clickable Colorful Flag Tiles Grid
@@ -800,7 +1028,7 @@ def render_login_screen():
                 is_selected = (st.session_state.lang == item["name"])
                 btn_type = "primary" if is_selected else "secondary"
                 if st.button(f"{item['flag']} {item['label']}", key=f"lang_btn_{item['id']}", type=btn_type, use_container_width=True):
-                    st.session_state.lang = item["name"]
+                    change_language(item["name"])
                     st.rerun()
 
     st.markdown("---")
@@ -824,11 +1052,15 @@ def render_login_screen():
                         else:
                             auth_user = database.authenticate_user(u_id, u_pw)
                             if auth_user:
+                                st.session_state.logged_out = False
                                 st.session_state.user = auth_user
                                 st.session_state.authenticated = True
                                 if auth_user.get("preferred_language") in TRANSLATIONS:
-                                    st.session_state.lang = auth_user["preferred_language"]
-                                cookie_manager.set("clinical_auth_uid", str(auth_user["id"]), expires_at=datetime(2027, 1, 1))
+                                    change_language(auth_user["preferred_language"])
+                                try:
+                                    cookie_manager.set("clinical_auth_uid", str(auth_user["id"]), expires_at=datetime(2027, 1, 1))
+                                except Exception:
+                                    pass
                                 st.success(f"{t('welcome')}!")
                                 st.rerun()
                             else:
@@ -865,10 +1097,14 @@ def render_login_screen():
                             else:
                                 new_u = database.register_user(reg_id, reg_pw, st.session_state.lang)
                                 if new_u:
+                                    st.session_state.logged_out = False
                                     st.session_state.user = new_u
                                     st.session_state.authenticated = True
                                     st.session_state.simulated_otp = None
-                                    cookie_manager.set("clinical_auth_uid", str(new_u["id"]), expires_at=datetime(2027, 1, 1))
+                                    try:
+                                        cookie_manager.set("clinical_auth_uid", str(new_u["id"]), expires_at=datetime(2027, 1, 1))
+                                    except Exception:
+                                        pass
                                     st.success("Account created successfully!")
                                     st.rerun()
                                 else:
@@ -926,15 +1162,25 @@ def render_top_header():
             label_visibility="collapsed"
         )
         if new_lang != st.session_state.lang:
-            st.session_state.lang = new_lang
-            if st.session_state.user:
-                database.update_user_language(st.session_state.user["id"], new_lang)
+            change_language(new_lang)
             st.rerun()
     with col3:
         if st.button(t("sign_out"), key="btn_top_signout", use_container_width=True):
-            cookie_manager.delete("clinical_auth_uid")
             st.session_state.authenticated = False
             st.session_state.user = None
+            st.session_state.logged_out = True
+            st.session_state.active_diet_plan = None
+            st.session_state.chat_history_health = []
+            st.session_state.chat_history_trends = []
+            st.session_state.chat_history_diet = []
+            try:
+                cookie_manager.set("clinical_auth_uid", "", max_age=0, expires_at=datetime.now() - timedelta(days=7))
+            except Exception:
+                pass
+            try:
+                cookie_manager.delete("clinical_auth_uid")
+            except Exception:
+                pass
             st.rerun()
 
 # =========================================================================
@@ -1215,19 +1461,56 @@ def render_analysis_page():
 # =========================================================================
 
 CUISINES = [
-    {"id": "roti_daal", "label": "🫓 Roti, Daal and Paneer", "name": "Roti, Daal and Paneer", "desc": "Classic Desi Indian: soft rotis, yellow moong daal, tender paneer & light vegetables"},
-    {"id": "south_indian", "label": "🍲 South Indian", "name": "South Indian", "desc": "Steamed idlis, comforting sambar, gentle rasam & tender greens"},
-    {"id": "mediterranean", "label": "🫒 Mediterranean", "name": "Mediterranean", "desc": "Olive oil, soft lentils, stewed vegetables & mild fish"},
-    {"id": "diabetic", "label": "🌾 Diabetic Friendly", "name": "Diabetic Friendly", "desc": "Low sugar, high fiber & steady-energy gentle meals"},
-    {"id": "heart", "label": "❤️ Heart Friendly", "name": "Heart Friendly", "desc": "Low salt, tender steamed meals & potassium-rich broths"}
+    {
+        "id": "roti_daal",
+        "key": "cuisine_roti",
+        "desc_key": "cuisine_roti_desc",
+        "name": "Roti, Daal and Paneer (Desi Indian)",
+        "legacy_name": "Roti, Daal and Paneer"
+    },
+    {
+        "id": "south_indian",
+        "key": "cuisine_south",
+        "desc_key": "cuisine_south_desc",
+        "name": "South Indian (Soft Idli, Sambar & Rasam)",
+        "legacy_name": "South Indian"
+    },
+    {
+        "id": "mediterranean",
+        "key": "cuisine_med",
+        "desc_key": "cuisine_med_desc",
+        "name": "Mediterranean (Heart Healthy)",
+        "legacy_name": "Mediterranean"
+    },
+    {
+        "id": "diabetic",
+        "key": "cuisine_diabetic",
+        "desc_key": "cuisine_diabetic_desc",
+        "name": "Diabetic Friendly (Low Sugar & High Fiber)",
+        "legacy_name": "Diabetic Friendly"
+    },
+    {
+        "id": "heart",
+        "key": "cuisine_heart",
+        "desc_key": "cuisine_heart_desc",
+        "name": "Heart Friendly (Low Salt & Tender)",
+        "legacy_name": "Heart Friendly"
+    }
 ]
+
+def get_active_cuisine():
+    cur = st.session_state.get("active_cuisine", "roti_daal")
+    for c in CUISINES:
+        if cur in [c["id"], c["name"], c.get("legacy_name"), c.get("key")]:
+            return c
+    return CUISINES[0]
 
 def render_diet_planner_page():
     user = st.session_state.user
     latest_report = database.get_latest_report_with_metrics(user["id"])
     
     if not latest_report:
-        st.info("Please upload a health test report first so we can tailor meals to your body's needs.")
+        st.info(t("upload_report_first"))
         return
 
     st.markdown(f"## {t('diet_header')}")
@@ -1236,29 +1519,32 @@ def render_diet_planner_page():
     metrics = latest_report.get("metrics", [])
     abnormal_metrics = [m for m in metrics if str(m.get("status", "")).lower() in ["high", "low", "alert"]]
 
+    active_c = get_active_cuisine()
+
     # Cuisine Selection Tiles Grid
     with st.container(border=True):
-        st.markdown("#### 🍽️ Choose a Cuisine Style:")
+        st.markdown(f"#### {t('choose_cuisine_header')}")
         cols = st.columns(len(CUISINES))
         for i, c in enumerate(CUISINES):
             with cols[i]:
                 with st.container(border=True):
-                    st.markdown(f"**{c['label']}**")
-                    st.caption(c["desc"])
-                    is_selected = (st.session_state.active_cuisine == c["name"])
+                    st.markdown(f"**{t(c['key'])}**")
+                    st.caption(t(c["desc_key"]))
+                    is_selected = (active_c["id"] == c["id"])
                     btn_type = "primary" if is_selected else "secondary"
-                    btn_text = "✓ Selected" if is_selected else "Select"
+                    btn_text = f"✓ {t('selected_btn')}" if is_selected else t("select_btn")
                     if st.button(btn_text, key=f"cuisine_tile_{c['id']}", type=btn_type, use_container_width=True):
-                        st.session_state.active_cuisine = c["name"]
+                        st.session_state.active_cuisine = c["id"]
                         st.rerun()
 
-        st.info(f"Selected: **{st.session_state.active_cuisine}**")
+        active_c = get_active_cuisine()
+        st.info(f"{t('selected_lbl')} **{t(active_c['key'])}**")
 
         if st.button(t("generate_diet_btn"), type="primary", use_container_width=True):
             with st.spinner("Preparing gentle, nutritious daily meal suggestions with Gemini..."):
                 try:
                     plan = ai_engine.generate_personalized_diet_plan(
-                        cuisine=st.session_state.active_cuisine,
+                        cuisine=f"{active_c['name']} ({t(active_c['key'])})",
                         abnormal_metrics=abnormal_metrics,
                         med_history=latest_report.get("med_history", ""),
                         current_meds=latest_report.get("current_meds", ""),
@@ -1266,7 +1552,7 @@ def render_diet_planner_page():
                         language=st.session_state.lang
                     )
                     st.session_state.active_diet_plan = plan
-                    st.success("Your customized meal plan is ready!")
+                    st.success(t("plan_ready_msg"))
                 except Exception as e:
                     st.error(f"Error creating plan: {str(e)}")
 
@@ -1275,10 +1561,10 @@ def render_diet_planner_page():
         plan = st.session_state.active_diet_plan
         st.markdown("---")
         with st.container(border=True):
-            st.markdown(f"### 📋 Daily Meal Guide ({plan.get('cuisine', st.session_state.active_cuisine)})")
+            st.markdown(f"### 📋 {t('daily_meal_guide')} ({t(active_c['key'])})")
             
             if plan.get("comfort_tips"):
-                st.info(f"💡 **Easy Chewing & Digestion Advice:** {plan.get('comfort_tips')}")
+                st.info(f"💡 **{t('chewing_digestion_advice')}:** {plan.get('comfort_tips')}")
 
             # Meal Sessions (Morning, Midday, Evening)
             schedule = plan.get("daily_schedule", [])
@@ -1295,11 +1581,11 @@ def render_diet_planner_page():
 
             col_p, col_l = st.columns(2)
             with col_p:
-                st.success("##### 🥗 Wholesome Foods to Enjoy Daily")
+                st.success(f"##### 🥗 {t('wholesome_foods_daily')}")
                 for f in plan.get("foods_to_enjoy", []):
                     st.markdown(f"- **{f}**")
             with col_l:
-                st.warning("##### 🚫 Foods to Limit")
+                st.warning(f"##### 🚫 {t('foods_to_limit')}")
                 for f in plan.get("foods_to_limit", []):
                     st.markdown(f"- **{f}**")
 
