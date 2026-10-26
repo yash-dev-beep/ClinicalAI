@@ -80,8 +80,8 @@ TRANSLATIONS = {
         "select_marker_lbl": "Select Health Test to View:",
         "alerts_header": "🔔 Important Things to Know From Your Report",
         "alerts_sub": "Carefully color-coded for your comfort. Red means ask your doctor; Green means healthy.",
-        "alert_badge": "⚠️ Alert / Check with Doctor",
-        "good_badge": "✅ All Good & Healthy",
+        "alert_badge": "⚠️ Alert: Needs Attention",
+        "good_badge": "✅ Good",
         "upload_more": "➕ Add Another Test Report (PDF)",
         "diet_tab_btn": "🥗 My Recovery Diet Plan",
         "trends_tab_btn": "📊 Health Trends & Reports",
@@ -95,7 +95,7 @@ TRANSLATIONS = {
         "generate_diet_btn": "✨ Create My Personal Meal Plan",
         "diet_chat_popover": "🧑🍳 Customize My Diet",
         "trends_chat_popover": "🤖 Discuss My Health Trends",
-        "health_chat_popover": "💬 Ask Health Assistant",
+        "health_chat_popover": "💬 General Health Assistant",
         "popover_ph": "Type your question here in simple words...",
         "safety_disclaimer": "💙 Health Note: This tool provides simple everyday educational support. Always consult your attending doctor before changing medicines."
     },
@@ -1307,7 +1307,8 @@ def render_top_header():
     col1, col2, col3 = st.columns([6, 3, 3])
     with col1:
         st.markdown(f"### 🩺 {t('app_title')}")
-        st.caption(f"👤 {st.session_state.user['identifier']}")
+        user_name = st.session_state.user.get("name") or st.session_state.user.get("identifier", "").split("@")[0].capitalize()
+        st.caption(f"👤 **{user_name}** ({st.session_state.user['identifier']})")
     with col2:
         # Language Switcher
         current_name = st.session_state.lang
@@ -1605,7 +1606,7 @@ def render_analysis_page():
             with st.expander(f"{t('good_badge')} ({len(normal_list)} parameters)"):
                 for m in normal_list:
                     unit_str = f" {m.get('unit')}" if m.get('unit') else ""
-                    st.success(f"🟢 **{m.get('test_name')}**: {m.get('value')}{unit_str} (Normal range: {m.get('range', 'N/A')})")
+                    st.success(f"🟢 **{m.get('test_name')}**: {m.get('value')}{unit_str} (Normal range: {m.get('range', 'N/A')}) — *{t('good_badge')}*")
 
     st.markdown("---")
 
@@ -1721,6 +1722,19 @@ def render_diet_planner_page():
                     btn_text = f"✓ {t('selected_btn')}" if is_selected else t("select_btn")
                     if st.button(btn_text, key=f"cuisine_tile_{c['id']}", type=btn_type, use_container_width=True):
                         st.session_state.active_cuisine = c["id"]
+                        with st.spinner("Preparing gentle, nutritious daily meal suggestions with Gemini..."):
+                            try:
+                                plan = ai_engine.generate_personalized_diet_plan(
+                                    cuisine=f"{c['name']} ({t(c['key'])})",
+                                    abnormal_metrics=abnormal_metrics,
+                                    med_history=latest_report.get("med_history", ""),
+                                    current_meds=latest_report.get("current_meds", ""),
+                                    dietary_restrictions="",
+                                    language=st.session_state.lang
+                                )
+                                st.session_state.active_diet_plan = plan
+                            except Exception as e:
+                                st.error(f"Error creating plan: {str(e)}")
                         st.rerun()
 
         active_c = get_active_cuisine()
