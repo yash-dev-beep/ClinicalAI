@@ -45,29 +45,49 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 1. Users Table
+    # 1. Users Table (id, identifier, pin, language, name, password, password_hash, created_at)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identifier TEXT UNIQUE NOT NULL,
+        name TEXT,
+        pin TEXT,
         password TEXT NOT NULL,
         password_hash TEXT,
+        language TEXT DEFAULT 'English',
         preferred_language TEXT DEFAULT 'English',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
 
-    # Column migrations for users
+    # Safe column migrations for users
     cursor.execute("PRAGMA table_info(users)")
     user_cols = {row["name"] for row in cursor.fetchall()}
+    if "name" not in user_cols:
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN name TEXT")
+        except Exception:
+            pass
+    if "pin" not in user_cols:
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN pin TEXT")
+        except Exception:
+            pass
     if "password" not in user_cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN password TEXT")
-        if "password_hash" in user_cols:
-            cursor.execute("UPDATE users SET password = password_hash WHERE password IS NULL")
-        elif "pin" in user_cols:
-            cursor.execute("UPDATE users SET password = pin WHERE password IS NULL")
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password TEXT")
+        except Exception:
+            pass
+    if "language" not in user_cols:
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'English'")
+        except Exception:
+            pass
     if "preferred_language" not in user_cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'English'")
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'English'")
+        except Exception:
+            pass
 
     # 2. Reports Table with UNIQUE(user_id, report_date)
     cursor.execute("""
@@ -75,6 +95,9 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         report_date TEXT NOT NULL,
+        narrative TEXT,
+        safety TEXT,
+        diet_json TEXT,
         med_history TEXT,
         current_meds TEXT,
         analysis_summary TEXT,
@@ -84,27 +107,40 @@ def init_db():
     );
     """)
 
-    # Column migrations for reports
+    # Safe column migrations for reports
     cursor.execute("PRAGMA table_info(reports)")
     report_cols = {row["name"] for row in cursor.fetchall()}
+    if "narrative" not in report_cols:
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN narrative TEXT")
+        except Exception:
+            pass
+    if "safety" not in report_cols:
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN safety TEXT")
+        except Exception:
+            pass
+    if "diet_json" not in report_cols:
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN diet_json TEXT")
+        except Exception:
+            pass
     if "med_history" not in report_cols:
-        cursor.execute("ALTER TABLE reports ADD COLUMN med_history TEXT")
-        if "history" in report_cols:
-            cursor.execute("UPDATE reports SET med_history = history WHERE med_history IS NULL")
-        elif "medical_history" in report_cols:
-            cursor.execute("UPDATE reports SET med_history = medical_history WHERE med_history IS NULL")
-
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN med_history TEXT")
+        except Exception:
+            pass
     if "current_meds" not in report_cols:
-        cursor.execute("ALTER TABLE reports ADD COLUMN current_meds TEXT")
-        if "medications" in report_cols:
-            cursor.execute("UPDATE reports SET current_meds = medications WHERE current_meds IS NULL")
-        elif "current_medications" in report_cols:
-            cursor.execute("UPDATE reports SET current_meds = current_medications WHERE current_meds IS NULL")
-
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN current_meds TEXT")
+        except Exception:
+            pass
     if "analysis_summary" not in report_cols:
-        cursor.execute("ALTER TABLE reports ADD COLUMN analysis_summary TEXT")
-        if "narrative_summary" in report_cols:
-            cursor.execute("UPDATE reports SET analysis_summary = narrative_summary WHERE analysis_summary IS NULL")
+        try:
+            cursor.execute("ALTER TABLE reports ADD COLUMN analysis_summary TEXT")
+        except Exception:
+            pass
+
 
     # Clean legacy duplicates if any before enforcing UNIQUE(user_id, report_date)
     cursor.execute("PRAGMA foreign_keys = OFF;")
@@ -204,23 +240,27 @@ def init_db():
 # Authentication & User Management
 # =========================================================================
 
-def register_user(identifier: str, password: str, preferred_language: str = "English") -> Optional[Dict[str, Any]]:
-    """Registers a new user with hashed password and preferred language."""
+def register_user(identifier: str, password: str, preferred_language: str = "English", name: str = "") -> Optional[Dict[str, Any]]:
+    """Registers a new user with 4-digit PIN/password, optional name, and preferred language."""
     clean_id = identifier.strip().lower()
-    pw_hash = hash_password(password.strip())
+    clean_pin = password.strip()
+    pw_hash = hash_password(clean_pin)
+    user_name = name.strip() if name else clean_id.split("@")[0].capitalize()
     conn = get_connection()
     try:
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (identifier, password, password_hash, preferred_language)
-                VALUES (?, ?, ?, ?)
-            """, (clean_id, pw_hash, pw_hash, preferred_language))
+                INSERT INTO users (identifier, name, pin, password, password_hash, language, preferred_language)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (clean_id, user_name, clean_pin, pw_hash, pw_hash, preferred_language, preferred_language))
             user_id = cursor.lastrowid
             return {
                 "id": user_id,
                 "identifier": clean_id,
-                "preferred_language": preferred_language
+                "name": user_name,
+                "preferred_language": preferred_language,
+                "language": preferred_language
             }
     except sqlite3.IntegrityError:
         return None
@@ -228,25 +268,62 @@ def register_user(identifier: str, password: str, preferred_language: str = "Eng
         conn.close()
 
 def authenticate_user(identifier: str, password: str) -> Optional[Dict[str, Any]]:
-    """Validates user credentials and returns the user object if authenticated."""
+    """Validates user credentials (PIN or password) and returns the user object if authenticated."""
     clean_id = identifier.strip().lower()
+    candidate = password.strip()
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, password, password_hash, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
+        cursor.execute("SELECT id, identifier, name, pin, password, password_hash, language, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
         row = cursor.fetchone()
         if not row:
             return None
         
+        stored_pin = row["pin"]
         stored_pw = row["password"] or row["password_hash"]
-        if verify_password(password.strip(), stored_pw):
+        
+        # Check plain PIN or hashed password
+        if (stored_pin and candidate == str(stored_pin).strip()) or verify_password(candidate, stored_pw):
+            display_name = row["name"] or row["identifier"].split("@")[0].capitalize()
             return {
                 "id": row["id"],
                 "identifier": row["identifier"],
-                "preferred_language": row["preferred_language"],
+                "name": display_name,
+                "preferred_language": row["preferred_language"] or row["language"] or "English",
+                "language": row["language"] or row["preferred_language"] or "English",
                 "created_at": row["created_at"]
             }
         return None
+    finally:
+        conn.close()
+
+def reset_user_pin(identifier: str, new_pin: str) -> bool:
+    """Executes an inline UPDATE users SET pin = ? query without page navigation."""
+    clean_id = identifier.strip().lower()
+    pin_str = str(new_pin).strip()
+    pw_hash = hash_password(pin_str)
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users 
+                SET pin = ?, password = ?, password_hash = ? 
+                WHERE identifier = ?
+            """, (pin_str, pw_hash, pw_hash, clean_id))
+            return cursor.rowcount > 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+def get_user_report_dates(user_id: int) -> List[str]:
+    """Fetches all existing report dates for a user to silently drop duplicate uploads."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT report_date FROM reports WHERE user_id = ?", (user_id,))
+        return [row["report_date"] for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -256,9 +333,14 @@ def get_user_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
+        cursor.execute("SELECT id, identifier, name, pin, language, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        if not d.get("name"):
+            d["name"] = d["identifier"].split("@")[0].capitalize()
+        return d
     finally:
         conn.close()
 
@@ -267,9 +349,14 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, preferred_language, created_at FROM users WHERE id = ?", (user_id,))
+        cursor.execute("SELECT id, identifier, name, pin, language, preferred_language, created_at FROM users WHERE id = ?", (user_id,))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        if not d.get("name"):
+            d["name"] = d["identifier"].split("@")[0].capitalize()
+        return d
     finally:
         conn.close()
 
@@ -278,12 +365,13 @@ def update_user_language(user_id: int, language: str) -> bool:
     conn = get_connection()
     try:
         with conn:
-            conn.execute("UPDATE users SET preferred_language = ? WHERE id = ?", (language, user_id))
+            conn.execute("UPDATE users SET preferred_language = ?, language = ? WHERE id = ?", (language, language, user_id))
         return True
     except Exception:
         return False
     finally:
         conn.close()
+
 
 # =========================================================================
 # OTP & Password Reset Operations
@@ -379,8 +467,9 @@ def save_report_and_metrics(
         med_history = kwargs["medical_history"]
     if not current_meds and "current_medications" in kwargs:
         current_meds = kwargs["current_medications"]
-    if not analysis_summary and "narrative_summary" in kwargs:
-        analysis_summary = kwargs["narrative_summary"]
+    narrative = kwargs.get("narrative", analysis_summary)
+    safety = kwargs.get("safety", "")
+    diet_json = kwargs.get("diet_json", "")
 
     conn = get_connection()
     try:
@@ -395,17 +484,17 @@ def save_report_and_metrics(
                 report_id = existing["id"]
                 cursor.execute("""
                     UPDATE reports
-                    SET med_history = ?, current_meds = ?, analysis_summary = ?, created_at = CURRENT_TIMESTAMP
+                    SET med_history = ?, current_meds = ?, analysis_summary = ?, narrative = ?, safety = ?, diet_json = ?, created_at = CURRENT_TIMESTAMP
                     WHERE id = ?
-                """, (med_history, current_meds, analysis_summary, report_id))
+                """, (med_history, current_meds, analysis_summary, narrative, safety, diet_json, report_id))
                 
                 cursor.execute("DELETE FROM metrics WHERE report_id = ?", (report_id,))
                 cursor.execute("DELETE FROM lab_metrics WHERE report_id = ?", (report_id,))
             else:
                 cursor.execute("""
-                    INSERT INTO reports (user_id, report_date, med_history, current_meds, analysis_summary)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (user_id, report_date, med_history, current_meds, analysis_summary))
+                    INSERT INTO reports (user_id, report_date, med_history, current_meds, analysis_summary, narrative, safety, diet_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, report_date, med_history, current_meds, analysis_summary, narrative, safety, diet_json))
                 report_id = cursor.lastrowid
 
             cursor.execute("PRAGMA table_info(lab_metrics)")
@@ -452,6 +541,9 @@ def get_user_reports(user_id: int) -> List[Dict[str, Any]]:
                    COALESCE(med_history, '') as med_history, 
                    COALESCE(current_meds, '') as current_meds, 
                    COALESCE(analysis_summary, '') as analysis_summary,
+                   COALESCE(narrative, '') as narrative,
+                   COALESCE(safety, '') as safety,
+                   COALESCE(diet_json, '') as diet_json,
                    created_at
             FROM reports
             WHERE user_id = ?
@@ -460,6 +552,8 @@ def get_user_reports(user_id: int) -> List[Dict[str, Any]]:
         return [dict(r) for r in cursor.fetchall()]
     finally:
         conn.close()
+
+
 
 def get_report_metrics(report_id: int) -> List[Dict[str, Any]]:
     """Returns all metrics for a given report."""

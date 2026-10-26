@@ -7,9 +7,11 @@ import os
 import random
 from datetime import datetime, timedelta
 import extra_streamlit_components as stx
+from streamlit_option_menu import option_menu
 
 import database
 import ai_engine
+
 
 # =========================================================================
 # Page Setup & Streamlit Configuration
@@ -882,7 +884,159 @@ for _lang_k, _extra_dict in CUISINE_TRANSLATIONS.items():
     if _lang_k in TRANSLATIONS:
         TRANSLATIONS[_lang_k].update(_extra_dict)
 
+EXTRA_TRANSLATIONS = {
+    "English 🇺🇸": {
+        "tab_home": "🏠 Home & Upload",
+        "tab_trends": "📈 Health Trends",
+        "tab_diet": "🥗 Food & Diet Planner",
+        "pin_lbl": "4-Digit PIN",
+        "pin_ph": "Enter your 4-digit PIN",
+        "name_lbl": "Full Name",
+        "name_ph": "e.g., Ramesh Patel",
+        "forgot_pin_lbl": "Forgot 4-Digit PIN",
+        "new_pin_lbl": "New 4-Digit PIN",
+        "reset_pin_btn": "✓ Update PIN & Sign In"
+    },
+    "Hindi (हिंदी) 🇮🇳": {
+        "tab_home": "🏠 होम और अपलोड",
+        "tab_trends": "📈 स्वास्थ्य रुझान",
+        "tab_diet": "🥗 भोजन योजना",
+        "pin_lbl": "4-अंकों का पिन",
+        "pin_ph": "अपना 4-अंकों का पिन दर्ज करें",
+        "name_lbl": "पूरा नाम",
+        "name_ph": "जैसे: रमेश पटेल",
+        "forgot_pin_lbl": "पिन भूल गए?",
+        "new_pin_lbl": "नया 4-अंकों का पिन",
+        "reset_pin_btn": "✓ पिन अपडेट करें और साइन इन करें"
+    },
+    "Punjabi (ਪੰਜਾਬੀ)": {
+        "tab_home": "🏠 ਹੋਮ ਅਤੇ ਅੱਪਲੋਡ",
+        "tab_trends": "📈 ਸਿਹਤ ਰੁਝਾਨ",
+        "tab_diet": "🥗 ਖੁਰਾਕ ਯੋਜਨਾ",
+        "pin_lbl": "4-ਅੰਕਾਂ ਦਾ ਪਿੰਨ",
+        "pin_ph": "4-ਅੰਕਾਂ ਦਾ ਪਿੰਨ ਦਰਜ ਕਰੋ",
+        "name_lbl": "ਪੂਰਾ ਨਾਮ",
+        "name_ph": "ਜਿਵੇਂ: ਰਮੇਸ਼ ਪਟੇਲ",
+        "forgot_pin_lbl": "ਪਿੰਨ ਭੁੱਲ ਗਏ?",
+        "new_pin_lbl": "ਨਵਾਂ 4-ਅੰਕਾਂ ਦਾ ਪਿੰਨ",
+        "reset_pin_btn": "✓ ਪਿੰਨ ਅੱਪਡੇਟ ਕਰੋ"
+    },
+    "Bengali (বাংলা)": {
+        "tab_home": "🏠 হোম ও আপলোড",
+        "tab_trends": "📈 স্বাস্থ্য ট্রেন্ড",
+        "tab_diet": "🥗 পথ্য পরিকল্পনা",
+        "pin_lbl": "৪-সংখ্যার পিন",
+        "pin_ph": "৪-সংখ্যার পিন লিখুন",
+        "name_lbl": "পুরো নাম",
+        "name_ph": "যেমন: রমেশ প্যাটেল",
+        "forgot_pin_lbl": "পিন ভুলে গেছেন?",
+        "new_pin_lbl": "নতুন ৪-সংখ্যার পিন",
+        "reset_pin_btn": "✓ পিন আপডেট করুন"
+    },
+    "Marathi (मराठी)": {
+        "tab_home": "🏠 होम आणि अपलोड",
+        "tab_trends": "📈 आरोग्य कल",
+        "tab_diet": "🥗 आहार योजना",
+        "pin_lbl": "४-अंकी पिन",
+        "pin_ph": "४-अंकी पिन प्रविष्ट करा",
+        "name_lbl": "पूर्ण नाव",
+        "name_ph": "उदा. रमेश पटेल",
+        "forgot_pin_lbl": "पिन विसरलात?",
+        "new_pin_lbl": "नवीन ४-अंकी पिन",
+        "reset_pin_btn": "✓ पिन अपडेट करा"
+    },
+    "Tamil (தமிழ்)": {
+        "tab_home": "🏠 முகப்பு & பதிவேற்றம்",
+        "tab_trends": "📈 உடல்நலப் போக்குகள்",
+        "tab_diet": "🥗 உணவுத் திட்டம்",
+        "pin_lbl": "4-இலக்க பின் (PIN)",
+        "pin_ph": "4-இலக்க பின்னை உள்ளிடவும்",
+        "name_lbl": "முழு பெயர்",
+        "name_ph": "எ.கா: ரமேஷ் படேல்",
+        "forgot_pin_lbl": "பின் மறந்துவிட்டதா?",
+        "new_pin_lbl": "புதிய 4-இலக்க பின்",
+        "reset_pin_btn": "✓ பின்னைப் புதுப்பிக்கவும்"
+    },
+    "Telugu (తెలుగు)": {
+        "tab_home": "🏠 హోమ్ & అప్‌లోడ్",
+        "tab_trends": "📈 ఆరోగ్య ధోరణులు",
+        "tab_diet": "🥗 ఆహార ప్రణాళిక",
+        "pin_lbl": "4-అంకెల పిన్ (PIN)",
+        "pin_ph": "4-అంకెల పిన్ నమోదు చేయండి",
+        "name_lbl": "పూర్తి పేరు",
+        "name_ph": "ఉదా: రమేష్ పటేల్",
+        "forgot_pin_lbl": "పిన్ మర్చిపోయారా?",
+        "new_pin_lbl": "కొత్త 4-అంకెల పిన్",
+        "reset_pin_btn": "✓ పిన్ అప్‌డేట్ చేయండి"
+    },
+    "Gujarati (ગુજરાતી)": {
+        "tab_home": "🏠 હોમ અને અપલોડ",
+        "tab_trends": "📈 સ્વાસ્થ્ય વલણ",
+        "tab_diet": "🥗 આહાર યોજના",
+        "pin_lbl": "૪-અંકનો પિન",
+        "pin_ph": "૪-અંકનો પિન દાખલ કરો",
+        "name_lbl": "પૂરું નામ",
+        "name_ph": "દા.ત.: રમેશ પટેલ",
+        "forgot_pin_lbl": "પિન ભૂલી ગયા?",
+        "new_pin_lbl": "નવો ૪-અંકનો પિન",
+        "reset_pin_btn": "✓ પિન અપડેટ કરો"
+    },
+    "Spanish (Español) 🇪🇸": {
+        "tab_home": "🏠 Inicio y Subida",
+        "tab_trends": "📈 Tendencias de Salud",
+        "tab_diet": "🥗 Plan de Alimentación",
+        "pin_lbl": "PIN de 4 dígitos",
+        "pin_ph": "Introduce tu PIN de 4 dígitos",
+        "name_lbl": "Nombre Completo",
+        "name_ph": "ej., Juan Pérez",
+        "forgot_pin_lbl": "¿Olvidaste tu PIN?",
+        "new_pin_lbl": "Nuevo PIN de 4 dígitos",
+        "reset_pin_btn": "✓ Actualizar PIN e Iniciar Sesión"
+    },
+    "French (Français) 🇫🇷": {
+        "tab_home": "🏠 Accueil & Importation",
+        "tab_trends": "📈 Tendances de Santé",
+        "tab_diet": "🥗 Plan Nutritionnel",
+        "pin_lbl": "Code PIN à 4 chiffres",
+        "pin_ph": "Entrez votre PIN à 4 chiffres",
+        "name_lbl": "Nom complet",
+        "name_ph": "ex., Jean Dupont",
+        "forgot_pin_lbl": "PIN oublié ?",
+        "new_pin_lbl": "Nouveau PIN à 4 chiffres",
+        "reset_pin_btn": "✓ Mettre à jour le PIN"
+    },
+    "Mandarin (中文) 🇨🇳": {
+        "tab_home": "🏠 首页与报告上传",
+        "tab_trends": "📈 健康趋势分析",
+        "tab_diet": "🥗 专属饮食方案",
+        "pin_lbl": "4位数字PIN码",
+        "pin_ph": "请输入4位数字PIN码",
+        "name_lbl": "您的姓名",
+        "name_ph": "例如：张伟",
+        "forgot_pin_lbl": "忘记PIN码？",
+        "new_pin_lbl": "设置新4位PIN码",
+        "reset_pin_btn": "✓ 更新PIN码并登录"
+    },
+    "Arabic (العربية) 🇸🇦": {
+        "tab_home": "🏠 الرئيسية والرفع",
+        "tab_trends": "📈 المؤشرات الصحية",
+        "tab_diet": "🥗 خطة الوجبات",
+        "pin_lbl": "رمز PIN مكون من 4 أرقام",
+        "pin_ph": "أدخل رمز PIN المكون من 4 أرقام",
+        "name_lbl": "الاسم الكامل",
+        "name_ph": "مثال: أحمد محمد",
+        "forgot_pin_lbl": "هل نسيت الرمز؟",
+        "new_pin_lbl": "رمز PIN جديد من 4 أرقام",
+        "reset_pin_btn": "✓ تحديث الرمز والدخول"
+    }
+}
+
+for _lang_k, _extra_dict in EXTRA_TRANSLATIONS.items():
+    if _lang_k in TRANSLATIONS:
+        TRANSLATIONS[_lang_k].update(_extra_dict)
+
 st.session_state.translations = TRANSLATIONS
+
 
 def t(key: str) -> str:
     """Returns the translation for the given key based on current language stored in session state."""
@@ -907,6 +1061,10 @@ if "lang" not in st.session_state:
 
 if "active_nav" not in st.session_state:
     st.session_state.active_nav = "trends"
+
+if "active_tab_index" not in st.session_state:
+    st.session_state.active_tab_index = 0
+
 
 if "active_cuisine" not in st.session_state:
     st.session_state.active_cuisine = "roti_daal"
@@ -966,9 +1124,10 @@ st.markdown("""
 <style>
     /* CRITICAL UI Compaction rule: remove default top whitespace */
     .block-container {
-        padding-top: 2rem !important;
+        padding-top: 1rem !important;
         padding-bottom: 2rem !important;
     }
+
     .stApp {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     }
@@ -1033,18 +1192,18 @@ def render_login_screen():
     auth_left, auth_center, auth_right = st.columns([1, 2, 1])
     with auth_center:
         with st.container(border=True):
-            tab_login, tab_register, tab_forgot = st.tabs([t("login_tab"), t("register_tab"), t("forgot_tab")])
+            tab_login, tab_register, tab_forgot = st.tabs([t("login_tab"), t("register_tab"), t("forgot_pin_lbl")])
 
-            # --- TAB 1: LOGIN ---
+            # --- TAB 1: LOGIN WITH 4-DIGIT PIN ---
             with tab_login:
                 with st.form("form_login"):
                     u_id = st.text_input(t("identifier_lbl"), placeholder=t("identifier_ph"), key="login_id_in")
-                    u_pw = st.text_input(t("password_lbl"), type="password", placeholder=t("password_ph"), key="login_pw_in")
+                    u_pw = st.text_input(t("pin_lbl"), type="password", placeholder=t("pin_ph"), key="login_pw_in")
                     btn_login = st.form_submit_button(t("login_btn"), type="primary", use_container_width=True)
 
                     if btn_login:
                         if not u_id or not u_pw:
-                            st.error("Please enter both your phone/email and password.")
+                            st.error("Please enter both your phone/email and 4-digit PIN.")
                         else:
                             auth_user = database.authenticate_user(u_id, u_pw)
                             if auth_user:
@@ -1060,10 +1219,11 @@ def render_login_screen():
                                 st.success(f"{t('welcome')}!")
                                 st.rerun()
                             else:
-                                st.error("Incorrect details. Please check your phone/email or password.")
+                                st.error("Incorrect details. Please check your phone/email or 4-digit PIN.")
 
-            # --- TAB 2: REGISTER WITH SIMULATED OTP ---
+            # --- TAB 2: REGISTER WITH NAME, PIN & SIMULATED OTP ---
             with tab_register:
+                reg_name = st.text_input(f"{t('name_lbl')} *", placeholder=t("name_ph"), key="reg_name_in")
                 reg_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="reg_id_in")
                 if st.button(t("send_otp_btn"), key="btn_send_reg_otp", use_container_width=True):
                     if not reg_id or len(reg_id.strip()) < 4:
@@ -1082,16 +1242,16 @@ def render_login_screen():
                     st.success(f"📱 **Simulated OTP Code:** `{st.session_state.simulated_otp}`")
                     with st.form("form_reg_verify"):
                         entered_otp = st.text_input(t("otp_lbl"), placeholder=t("otp_ph"))
-                        reg_pw = st.text_input(t("password_lbl"), type="password", placeholder=t("password_ph"))
+                        reg_pw = st.text_input(t("pin_lbl"), type="password", placeholder=t("pin_ph"))
                         btn_reg_done = st.form_submit_button(t("register_btn"), type="primary", use_container_width=True)
 
                         if btn_reg_done:
                             if entered_otp.strip() != st.session_state.simulated_otp:
                                 st.error("Incorrect code. Please enter the 6-digit code shown above.")
                             elif not reg_pw or len(reg_pw.strip()) < 4:
-                                st.error("Please enter a password with at least 4 characters.")
+                                st.error("Please enter a 4-digit PIN.")
                             else:
-                                new_u = database.register_user(reg_id, reg_pw, st.session_state.lang)
+                                new_u = database.register_user(reg_id, reg_pw, st.session_state.lang, name=reg_name)
                                 if new_u:
                                     st.session_state.logged_out = False
                                     st.session_state.user = new_u
@@ -1106,10 +1266,10 @@ def render_login_screen():
                                 else:
                                     st.error("Could not register. Please try again.")
 
-            # --- TAB 3: FORGOT PASSWORD FLOW ---
+            # --- TAB 3: INLINE FORGOT PIN FLOW ---
             with tab_forgot:
                 forgot_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="forgot_id_in")
-                if st.button("📩 Send Password Reset Code", key="btn_send_forgot_otp", use_container_width=True):
+                if st.button("📩 " + t("forgot_pin_lbl"), key="btn_send_forgot_otp", use_container_width=True):
                     if not forgot_id:
                         st.warning("Please enter your phone or email.")
                     else:
@@ -1123,19 +1283,21 @@ def render_login_screen():
                             database.store_otp(forgot_id.strip(), otp_reset)
 
                 if st.session_state.simulated_otp and st.session_state.otp_target == forgot_id.strip():
-                    st.success(f"📱 **Password Reset Code:** `{st.session_state.simulated_otp}`")
+                    st.success(f"📱 **PIN Reset Code:** `{st.session_state.simulated_otp}`")
                     with st.form("form_reset_pw"):
                         entered_reset_otp = st.text_input(t("otp_lbl"), placeholder=t("otp_ph"))
-                        new_pw = st.text_input(t("new_password_lbl"), type="password")
-                        btn_reset_submit = st.form_submit_button(t("reset_btn"), type="primary", use_container_width=True)
+                        new_pw = st.text_input(t("new_pin_lbl"), type="password", placeholder=t("pin_ph"))
+                        btn_reset_submit = st.form_submit_button(t("reset_pin_btn"), type="primary", use_container_width=True)
 
                         if btn_reset_submit:
                             ok, msg = database.verify_and_reset_password(forgot_id, entered_reset_otp, new_pw)
                             if ok:
+                                database.reset_user_pin(forgot_id, new_pw)
                                 st.session_state.simulated_otp = None
-                                st.success("Password updated! Please sign in using your new password.")
+                                st.success("PIN updated successfully! Please sign in with your new PIN.")
                             else:
                                 st.error(msg)
+
 
 # =========================================================================
 # Top Header Bar for Authenticated Users
@@ -1180,13 +1342,15 @@ def render_top_header():
             st.rerun()
 
 # =========================================================================
-# Module 4: Home Page (Upload & Context) - When NO Reports Exist
+# Module 4: Home & Upload Dashboard (Component 3 - Tab 1)
 # =========================================================================
 
-def render_first_time_home_page():
+def render_home_upload_dashboard():
     user = st.session_state.user
-    st.markdown(f"## {t('no_reports_title')}")
-    st.write(t("no_reports_sub"))
+    display_name = user.get("name") or user.get("identifier", "").split("@")[0].capitalize()
+    st.markdown(f"## 🩺 {t('welcome')}, {display_name}!")
+    st.caption(t("no_reports_sub"))
+    st.info(t("safety_disclaimer"))
     st.markdown("---")
 
     with st.container(border=True):
@@ -1194,14 +1358,14 @@ def render_first_time_home_page():
             t("upload_lbl"),
             type=["pdf"],
             accept_multiple_files=True,
-            key="first_time_pdf_uploader"
+            key="home_pdf_uploader"
         )
 
         col_hist, col_meds = st.columns(2)
         with col_hist:
-            med_hist = st.text_area(t("med_history_lbl"), placeholder=t("med_history_ph"), height=110, key="first_med_hist")
+            med_hist = st.text_area(t("med_history_lbl"), placeholder=t("med_history_ph"), height=110, key="home_med_hist")
         with col_meds:
-            curr_meds = st.text_area(t("current_meds_lbl"), placeholder=t("current_meds_ph"), height=110, key="first_curr_meds")
+            curr_meds = st.text_area(t("current_meds_lbl"), placeholder=t("current_meds_ph"), height=110, key="home_curr_meds")
 
         btn_analyze = st.button(t("analyze_btn"), type="primary", use_container_width=True)
 
@@ -1225,35 +1389,50 @@ def render_first_time_home_page():
                         metrics = analysis_res.get("metrics", [])
                         report_date = analysis_res.get("report_date", datetime.now().strftime("%Y-%m-%d"))
                         summary = analysis_res.get("analysis_summary", "")
+                        safety = json.dumps(analysis_res.get("health_alerts") or {})
+                        diet_json = json.dumps(analysis_res.get("initial_diet_plan") or {})
 
                         if not metrics:
                             st.error("No laboratory numbers could be identified in the uploaded PDF. Please make sure it is a clear test report.")
                         else:
-                            ok, rep_id, msg = database.save_report_and_metrics(
-                                user_id=user["id"],
-                                report_date=report_date,
-                                med_history=med_hist,
-                                current_meds=curr_meds,
-                                analysis_summary=summary,
-                                metrics=metrics,
-                                overwrite=False
-                            )
-                            if ok:
-                                st.success("Your report has been analyzed successfully!")
-                                st.session_state.active_nav = "trends"
-                                st.rerun()
-                            elif msg == "DUPLICATE_REPORT":
-                                st.info(f"ℹ️ Report for {report_date} is already saved. Duplicate entry blocked to keep trends accurate.")
+                            # Enforce Constraint 4: Before saving, fetch existing dates and drop duplicate uploads
+                            existing_dates = database.get_user_report_dates(user["id"])
+                            if report_date in existing_dates:
+                                st.info(f"ℹ️ Report for {report_date} already exists. Duplicates dropped to prevent trend flatlining.")
+                                st.session_state.active_tab_index = 1
                                 st.session_state.active_nav = "trends"
                                 st.rerun()
                             else:
-                                st.error(f"Save error: {msg}")
+                                ok, rep_id, msg = database.save_report_and_metrics(
+                                    user_id=user["id"],
+                                    report_date=report_date,
+                                    med_history=med_hist,
+                                    current_meds=curr_meds,
+                                    analysis_summary=summary,
+                                    metrics=metrics,
+                                    narrative=summary,
+                                    safety=safety,
+                                    diet_json=diet_json,
+                                    overwrite=False
+                                )
+                                if ok:
+                                    st.success("Your report has been analyzed successfully!")
+                                    st.session_state.active_tab_index = 1
+                                    st.session_state.active_nav = "trends"
+                                    st.rerun()
+                                elif msg == "DUPLICATE_REPORT":
+                                    st.info(f"ℹ️ Report for {report_date} is already saved. Duplicate entry blocked to keep trends accurate.")
+                                    st.session_state.active_tab_index = 1
+                                    st.session_state.active_nav = "trends"
+                                    st.rerun()
+                                else:
+                                    st.error(f"Save error: {msg}")
                     except Exception as e:
                         st.error(f"Analysis error: {str(e)}")
 
     st.markdown("---")
 
-    # Chatbot 1: st.popover("💬 Ask Health Assistant") at bottom left
+    # Chatbot 1: Global Chatbot in bottom-left named "General Health Assistant"
     popover_col1, popover_col2 = st.columns([1, 1])
     with popover_col1:
         with st.popover(t("health_chat_popover")):
@@ -1279,6 +1458,9 @@ def render_first_time_home_page():
                         st.markdown(reply)
                         st.session_state.chat_history_health.append({"role": "assistant", "content": reply})
 
+render_first_time_home_page = render_home_upload_dashboard
+
+
 # =========================================================================
 # Module 5: Analysis Page (Health Trends - Default Home Post-Upload)
 # =========================================================================
@@ -1290,8 +1472,12 @@ def render_analysis_page():
     latest_report = database.get_latest_report_with_metrics(user["id"])
 
     if not latest_report:
-        render_first_time_home_page()
+        st.info("No test reports found yet. Please upload your test papers in Tab 1 (Home & Upload).")
+        if st.button("⬅️ " + t("tab_home"), key="btn_goto_home_from_analysis", type="primary"):
+            st.session_state.active_tab_index = 0
+            st.rerun()
         return
+
 
     # Continuous Upload Option in an Expandable Container
     with st.expander(t("upload_more")):
@@ -1507,7 +1693,11 @@ def render_diet_planner_page():
     
     if not latest_report:
         st.info(t("upload_report_first"))
+        if st.button("⬅️ " + t("tab_home"), key="btn_goto_home_from_diet", type="primary"):
+            st.session_state.active_tab_index = 0
+            st.rerun()
         return
+
 
     st.markdown(f"## {t('diet_header')}")
     st.write(t("diet_sub"))
@@ -1636,30 +1826,38 @@ def main():
     else:
         render_top_header()
         
-        user = st.session_state.user
-        reports = database.get_user_reports(user["id"])
+        # Mandatory Bug Fix 1: State-managed option_menu navigation (resolves the Double-Click Bug)
+        nav_options = [t("tab_home"), t("tab_trends"), t("tab_diet")]
+        icons = ["house-door-fill", "graph-up-arrow", "egg-fried"]
+        cur_tab = min(st.session_state.get("active_tab_index", 0), len(nav_options) - 1)
         
-        if not reports:
-            # If NO reports exist -> Home Page (Upload & Context) with Chatbot 1
-            render_first_time_home_page()
-        else:
-            # If reports DO exist -> Default Home becomes Analysis Page with tab navigation
-            tab_col1, tab_col2 = st.columns(2)
-            with tab_col1:
-                btn_type1 = "primary" if st.session_state.active_nav == "trends" else "secondary"
-                if st.button(t("trends_tab_btn"), type=btn_type1, use_container_width=True):
-                    st.session_state.active_nav = "trends"
-                    st.rerun()
-            with tab_col2:
-                btn_type2 = "primary" if st.session_state.active_nav == "diet" else "secondary"
-                if st.button(t("diet_tab_btn"), type=btn_type2, use_container_width=True):
-                    st.session_state.active_nav = "diet"
-                    st.rerun()
+        selected_nav = option_menu(
+            menu_title=None,
+            options=nav_options,
+            icons=icons,
+            default_index=cur_tab,
+            orientation="horizontal",
+            key=f"clinical_nav_{st.session_state.lang}_{cur_tab}",
+            styles={
+                "container": {"padding": "0.3rem !important", "background-color": "#ffffff", "border-radius": "10px", "border": "1px solid #e2e8f0", "margin-bottom": "1.2rem"},
+                "icon": {"color": "#1d4ed8", "font-size": "18px"},
+                "nav-link": {"font-size": "16px", "text-align": "center", "margin": "0px", "font-weight": "600", "--hover-color": "#eff6ff"},
+                "nav-link-selected": {"background-color": "#1d4ed8", "color": "#ffffff", "font-weight": "700"},
+            }
+        )
+        
+        target_idx = nav_options.index(selected_nav) if selected_nav in nav_options else 0
+        if target_idx != st.session_state.active_tab_index:
+            st.session_state.active_tab_index = target_idx
+            st.rerun()
 
-            if st.session_state.active_nav == "trends":
-                render_analysis_page()
-            else:
-                render_diet_planner_page()
+        if st.session_state.active_tab_index == 0:
+            render_home_upload_dashboard()
+        elif st.session_state.active_tab_index == 1:
+            render_analysis_page()
+        else:
+            render_diet_planner_page()
+
 
 if __name__ == "__main__":
     main()
