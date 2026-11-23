@@ -6,11 +6,38 @@ import re
 import os
 import random
 from datetime import datetime, timedelta
+from typing import Tuple, Optional
 import extra_streamlit_components as stx
 from streamlit_option_menu import option_menu
 
 import database
 import ai_engine
+
+def validate_email_or_phone(raw_value: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validates whether the raw input is a well-formed email address or phone number.
+    Returns (True, None) if valid, or (False, error_message) with clear, elderly-friendly guidance.
+    """
+    if raw_value is None or not str(raw_value).strip():
+        return False, "Please enter your email address or mobile phone number to continue."
+    
+    val = str(raw_value).strip()
+    if " " in val:
+        return False, "Please ensure there are no spaces in your email address or phone number."
+    
+    if "@" in val:
+        if ".." in val:
+            return False, "Please check your email address. It cannot contain two dots together (..)."
+        email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+        if not re.match(email_pattern, val):
+            return False, "Please enter a valid email address (for example: yourname@gmail.com)."
+        return True, None
+    else:
+        indian_mobile_pattern = r"^(\+91|91)?[6-9]\d{9}$"
+        international_pattern = r"^\+[1-9]\d{9,14}$"
+        if not (re.match(indian_mobile_pattern, val) or re.match(international_pattern, val)):
+            return False, "Please enter a valid 10-digit mobile number (e.g., 9876543210) or international number with country code (e.g., +12345678901)."
+        return True, None
 
 
 # =========================================================================
@@ -1223,23 +1250,34 @@ def render_login_screen():
 
             # --- TAB 2: REGISTER WITH NAME, PIN & SIMULATED OTP ---
             with tab_register:
-                reg_name = st.text_input(f"{t('name_lbl')} *", placeholder=t("name_ph"), key="reg_name_in")
-                reg_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="reg_id_in")
-                if st.button(t("send_otp_btn"), key="btn_send_reg_otp", use_container_width=True):
-                    if not reg_id or len(reg_id.strip()) < 4:
-                        st.warning("Please enter your phone number or email first.")
-                    else:
-                        existing = database.get_user_by_identifier(reg_id)
-                        if existing:
-                            st.warning("An account already exists for this number/email. Please sign in.")
-                        else:
-                            otp_val = f"{random.randint(100000, 999999)}"
-                            st.session_state.simulated_otp = otp_val
-                            st.session_state.otp_target = reg_id.strip()
-                            database.store_otp(reg_id.strip(), otp_val)
+                if not (st.session_state.get("simulated_otp") and st.session_state.get("otp_target")):
+                    with st.form("form_reg_step1"):
+                        reg_name = st.text_input(f"{t('name_lbl')} *", placeholder=t("name_ph"), key="reg_name_in")
+                        reg_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="reg_id_in")
+                        btn_send_otp = st.form_submit_button(t("send_otp_btn"), type="primary", use_container_width=True)
 
-                if st.session_state.simulated_otp and st.session_state.otp_target == reg_id.strip():
+                        if btn_send_otp:
+                            if not reg_name or not reg_name.strip():
+                                st.error("Please enter your name.")
+                            else:
+                                is_valid, err_msg = validate_email_or_phone(reg_id)
+                                if not is_valid:
+                                    st.error(err_msg)
+                                else:
+                                    clean_id = reg_id.strip().lower()
+                                    existing = database.get_user_by_identifier(clean_id)
+                                    if existing:
+                                        st.warning(f"An account with '{reg_id.strip()}' is already registered in the system. Please switch to the 'Sign In' tab, or use 'Forgot 4-Digit PIN' to reset your credentials.")
+                                    else:
+                                        otp_val = f"{random.randint(100000, 999999)}"
+                                        st.session_state.simulated_otp = otp_val
+                                        st.session_state.otp_target = reg_id.strip()
+                                        st.session_state.reg_name_val = reg_name.strip()
+                                        database.store_otp(clean_id, otp_val)
+                                        st.rerun()
+                else:
                     st.success(f"📱 **Simulated OTP Code:** `{st.session_state.simulated_otp}`")
+                    st.info(f"Verification code sent for **{st.session_state.get('reg_name_val', '')}** ({st.session_state.otp_target})")
                     with st.form("form_reg_verify"):
                         entered_otp = st.text_input(t("otp_lbl"), placeholder=t("otp_ph"))
                         reg_pw = st.text_input(t("pin_lbl"), type="password", placeholder=t("pin_ph"))
@@ -1248,15 +1286,18 @@ def render_login_screen():
                         if btn_reg_done:
                             if entered_otp.strip() != st.session_state.simulated_otp:
                                 st.error("Incorrect code. Please enter the 6-digit code shown above.")
-                            elif not reg_pw or len(reg_pw.strip()) < 4:
-                                st.error("Please enter a 4-digit PIN.")
+                            elif not reg_pw or len(reg_pw.strip()) < 4 or not reg_pw.strip().isdigit():
+                                st.error("Please enter a 4-digit numeric PIN.")
                             else:
-                                new_u = database.register_user(reg_id, reg_pw, st.session_state.lang, name=reg_name)
+                                target_id = st.session_state.otp_target
+                                target_name = st.session_state.get("reg_name_val", "")
+                                new_u = database.register_user(target_id, reg_pw.strip(), st.session_state.lang, name=target_name)
                                 if new_u:
                                     st.session_state.logged_out = False
                                     st.session_state.user = new_u
                                     st.session_state.authenticated = True
                                     st.session_state.simulated_otp = None
+                                    st.session_state.otp_target = None
                                     try:
                                         cookie_manager.set("clinical_auth_uid", str(new_u["id"]), expires_at=datetime(2027, 1, 1))
                                     except Exception:
@@ -1266,37 +1307,55 @@ def render_login_screen():
                                 else:
                                     st.error("Could not register. Please try again.")
 
+                    if st.button("← Change Details / Re-enter Information", key="btn_cancel_reg_otp", use_container_width=True):
+                        st.session_state.simulated_otp = None
+                        st.session_state.otp_target = None
+                        st.rerun()
+
             # --- TAB 3: INLINE FORGOT PIN FLOW ---
             with tab_forgot:
-                forgot_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="forgot_id_in")
-                if st.button("📩 " + t("forgot_pin_lbl"), key="btn_send_forgot_otp", use_container_width=True):
-                    if not forgot_id:
-                        st.warning("Please enter your phone or email.")
-                    else:
-                        u_record = database.get_user_by_identifier(forgot_id)
-                        if not u_record:
-                            st.error("No account found with this identifier.")
-                        else:
-                            otp_reset = f"{random.randint(100000, 999999)}"
-                            st.session_state.simulated_otp = otp_reset
-                            st.session_state.otp_target = forgot_id.strip()
-                            database.store_otp(forgot_id.strip(), otp_reset)
+                if not (st.session_state.get("forgot_otp") and st.session_state.get("forgot_target")):
+                    with st.form("form_forgot_step1"):
+                        forgot_id = st.text_input(f"{t('identifier_lbl')} *", placeholder=t("identifier_ph"), key="forgot_id_in")
+                        btn_send_forgot = st.form_submit_button("📩 " + t("forgot_pin_lbl"), type="primary", use_container_width=True)
 
-                if st.session_state.simulated_otp and st.session_state.otp_target == forgot_id.strip():
-                    st.success(f"📱 **PIN Reset Code:** `{st.session_state.simulated_otp}`")
+                        if btn_send_forgot:
+                            clean_fid = forgot_id.strip()
+                            if not clean_fid:
+                                st.warning("Please enter your phone or email.")
+                            else:
+                                u_record = database.get_user_by_identifier(clean_fid)
+                                if not u_record:
+                                    st.error("No account found with this identifier. Please verify or register a new account.")
+                                else:
+                                    otp_reset = f"{random.randint(100000, 999999)}"
+                                    st.session_state.forgot_otp = otp_reset
+                                    st.session_state.forgot_target = clean_fid
+                                    database.store_otp(clean_fid, otp_reset)
+                                    st.rerun()
+                else:
+                    st.success(f"📱 **PIN Reset Code:** `{st.session_state.forgot_otp}`")
+                    st.caption(f"Reset code prepared for ({st.session_state.forgot_target})")
                     with st.form("form_reset_pw"):
                         entered_reset_otp = st.text_input(t("otp_lbl"), placeholder=t("otp_ph"))
                         new_pw = st.text_input(t("new_pin_lbl"), type="password", placeholder=t("pin_ph"))
                         btn_reset_submit = st.form_submit_button(t("reset_pin_btn"), type="primary", use_container_width=True)
 
                         if btn_reset_submit:
-                            ok, msg = database.verify_and_reset_password(forgot_id, entered_reset_otp, new_pw)
+                            fid = st.session_state.forgot_target
+                            ok, msg = database.verify_and_reset_password(fid, entered_reset_otp, new_pw)
                             if ok:
-                                database.reset_user_pin(forgot_id, new_pw)
-                                st.session_state.simulated_otp = None
-                                st.success("PIN updated successfully! Please sign in with your new PIN.")
+                                database.reset_user_pin(fid, new_pw)
+                                st.session_state.forgot_otp = None
+                                st.session_state.forgot_target = None
+                                st.success("PIN updated successfully! Please switch to Sign In with your new PIN.")
                             else:
                                 st.error(msg)
+
+                    if st.button("← Change Identifier / Re-enter", key="btn_cancel_forgot_otp", use_container_width=True):
+                        st.session_state.forgot_otp = None
+                        st.session_state.forgot_target = None
+                        st.rerun()
 
 
 # =========================================================================
@@ -1502,13 +1561,19 @@ def render_analysis_page():
                         )
                         metrics = res.get("metrics", [])
                         r_date = res.get("report_date", datetime.now().strftime("%Y-%m-%d"))
+                        summary2 = res.get("analysis_summary", "")
+                        safety2 = json.dumps(res.get("health_alerts") or {})
+                        diet_json2 = json.dumps(res.get("initial_diet_plan") or {})
                         database.save_report_and_metrics(
                             user_id=user["id"],
                             report_date=r_date,
                             med_history=h2,
                             current_meds=m2,
-                            analysis_summary=res.get("analysis_summary", ""),
+                            analysis_summary=summary2,
                             metrics=metrics,
+                            narrative=summary2,
+                            safety=safety2,
+                            diet_json=diet_json2,
                             overwrite=True
                         )
                         st.success("New report added to your health history!")

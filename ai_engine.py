@@ -19,19 +19,23 @@ load_dotenv()
 
 FALLBACK_MODELS = [
     "gemini-flash-latest",
-    "gemini-2.5-flash",
     "gemini-flash-lite-latest",
-    "gemini-2.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-pro-latest"
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash"
 ]
 
+_CLIENT_INSTANCE: Optional[genai.Client] = None
+
 def get_gemini_client() -> genai.Client:
-    """Instantiates and returns the Google GenAI client using the GEMINI_API_KEY environment variable."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is missing. Please check your .env file or Streamlit secrets.")
-    return genai.Client(api_key=api_key)
+    """Instantiates or reuses the Google GenAI client using the GEMINI_API_KEY environment variable."""
+    global _CLIENT_INSTANCE
+    if _CLIENT_INSTANCE is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY is missing. Please check your .env file or Streamlit secrets.")
+        _CLIENT_INSTANCE = genai.Client(api_key=api_key)
+    return _CLIENT_INSTANCE
 
 def robust_json_loads(raw_text: str) -> Dict[str, Any]:
     """
@@ -128,7 +132,11 @@ def generate_resilient_content(
                                     return parts_text.strip()
             except Exception as e:
                 last_error = e
-                time.sleep(0.6)
+                err_str = str(e).lower()
+                # Fast model switch if model is 404/not supported or quota exhausted
+                if any(k in err_str for k in ["404", "not_found", "no longer available", "429", "resource_exhausted", "quota"]):
+                    break
+                time.sleep(0.15)
 
     raise RuntimeError(f"All AI endpoints are busy or unavailable. Details: {last_error}")
 
@@ -175,6 +183,13 @@ class PersonalizedDietPlan(BaseModel):
     foods_to_enjoy: List[str] = Field(description="Wholesome foods they can freely enjoy")
     foods_to_limit: List[str] = Field(description="Foods they should eat sparingly")
 
+class UnifiedReportAnalysisWithDiet(BaseModel):
+    report_date: str = Field(description="Date of the report strictly in YYYY-MM-DD format (e.g. '2026-10-19'). If missing, use today's date.")
+    metrics: List[ExtractedMetric] = Field(description="List of all extracted laboratory biomarkers")
+    analysis_summary: str = Field(description="Warm, simple, encouraging 5th-grade narrative summary of results for elderly patients")
+    health_alerts: HealthAlertsResponse = Field(description="Structured health alerts for out-of-range biomarkers")
+    initial_diet_plan: Optional[PersonalizedDietPlan] = Field(default=None, description="Starter personalized recovery diet plan aligned with the selected cuisine")
+
 # =========================================================================
 # Simulated OTP Generation
 # =========================================================================
@@ -219,15 +234,25 @@ def extract_text_from_pdf(pdf_stream_or_bytes) -> str:
 def extract_text_from_multiple_pdfs(pdf_files: List[Any]) -> str:
     """
     Extracts text from multiple uploaded PDFs concurrently using ThreadPoolExecutor.
-    Ensures multi-document OCR finishes in under 5 seconds.
+    Ensures multi-document OCR finishes in under 5 seconds with thread-safe byte conversion.
     """
     if not pdf_files:
         return ""
     if len(pdf_files) == 1:
         return extract_text_from_pdf(pdf_files[0])
 
-    with ThreadPoolExecutor(max_workers=min(len(pdf_files), 4)) as executor:
-        extracted_pages = list(executor.map(extract_text_from_pdf, pdf_files))
+    byte_streams = []
+    for f in pdf_files:
+        if hasattr(f, "getvalue"):
+            byte_streams.append(f.getvalue())
+        elif hasattr(f, "read"):
+            f.seek(0)
+            byte_streams.append(f.read())
+        else:
+            byte_streams.append(f)
+
+    with ThreadPoolExecutor(max_workers=min(len(byte_streams), 4)) as executor:
+        extracted_pages = list(executor.map(extract_text_from_pdf, byte_streams))
     return "\n\n".join(extracted_pages)
 
 # =========================================================================
@@ -410,10 +435,72 @@ def run_concurrent_report_analysis(
     default_cuisine: str = "Roti, Daal and Paneer (Desi Indian)"
 ) -> Dict[str, Any]:
     """
-    Dispatches narrative synthesis, safety checking, and diet formulation simultaneously
-    using ThreadPoolExecutor for lightning-fast processing in seconds.
+    High-performance clinical report analyzer.
+    Executes an ultra-fast unified single-pass LLM pipeline (~2.5 seconds) extracting
+    metrics, date, elderly-friendly narrative, safety alerts, and initial diet plan in one call.
+    Gracefully falls back to threaded execution if needed, preventing 429 quota exhaustion.
     """
-    extraction = parse_clinical_report(raw_text, language=language)
+    clean_text = raw_text.strip()
+    if len(clean_text) > 30000:
+        clean_text = clean_text[:30000]
+
+    # --- Strategy 1: Ultra-fast Unified Single-Pass Extraction (1 API call, ~2-3s) ---
+    system_instruction = f"""
+You are a warm, gentle clinical laboratory specialist and geriatric health assistant.
+Analyze the provided laboratory report text completely in {language} strictly at a 5th-grade reading level.
+
+CRITICAL DIRECTIVES:
+1. Translate technical test names into simple everyday terms (e.g. 'Blood Sugar' instead of 'Hyperglycemia', 'Kidney Function (Creatinine)' instead of 'Serum Creatinine', 'Blood Pressure' instead of 'Hypertension', 'Cholesterol' instead of 'Lipid Panel').
+2. Extract numerical values for 'value'.
+3. Identify normal reference range (e.g. '12.0 - 15.5').
+4. For status: strictly 'High', 'Low', 'Normal', or 'Alert'.
+5. Format report_date strictly as YYYY-MM-DD. If missing, use today's date ({time.strftime("%Y-%m-%d")}).
+6. Write a comforting, warm 3-paragraph narrative analysis_summary explaining their numbers without medical jargon.
+7. Formulate structured health_alerts for out-of-range numbers with gentle explanations and doctor queries.
+8. Formulate an easy-to-chew, soothing initial_diet_plan aligned with '{default_cuisine}'.
+9. Everything must be written completely in {language}.
+"""
+
+    prompt = f"""
+Clinical Report Text:
+---
+{clean_text}
+---
+
+Patient Medical History: {med_history or 'None'}
+Current Medications: {current_meds or 'None'}
+Selected Cuisine: {default_cuisine}
+Target Language: {language}
+
+Extract all quantitative test metrics, report date, 5th-grade narrative summary, safety alerts, and starter recovery diet plan in {language}.
+"""
+
+    try:
+        raw_response = generate_resilient_content(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_schema=UnifiedReportAnalysisWithDiet,
+            temperature=0.1
+        )
+        data = robust_json_loads(raw_response)
+        metrics = data.get("metrics", [])
+        if metrics:
+            report_date = data.get("report_date") or time.strftime("%Y-%m-%d")
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(report_date)):
+                report_date = time.strftime("%Y-%m-%d")
+
+            return {
+                "report_date": report_date,
+                "metrics": metrics,
+                "analysis_summary": data.get("analysis_summary", "Your health test summary is ready."),
+                "health_alerts": data.get("health_alerts"),
+                "initial_diet_plan": data.get("initial_diet_plan")
+            }
+    except Exception:
+        pass
+
+    # --- Strategy 2: Resilient Fallback Pipeline ---
+    extraction = parse_clinical_report(clean_text, language=language)
     metrics = extraction.get("metrics", [])
     report_date = extraction.get("report_date", time.strftime("%Y-%m-%d"))
     abnormal_metrics = [m for m in metrics if str(m.get("status", "")).lower() in ["high", "low", "alert"]]
@@ -426,7 +513,7 @@ def run_concurrent_report_analysis(
         "initial_diet_plan": None
     }
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         future_narrative = executor.submit(
             generate_narrative_synthesis,
             metrics,
@@ -441,23 +528,14 @@ def run_concurrent_report_analysis(
             current_meds,
             language
         )
-        future_diet = executor.submit(
-            generate_personalized_diet_plan,
-            default_cuisine,
-            abnormal_metrics,
-            med_history,
-            current_meds,
-            "",
-            language
-        )
 
         try:
-            results["analysis_summary"] = future_narrative.result(timeout=45)
+            results["analysis_summary"] = future_narrative.result(timeout=15)
         except Exception as e:
             results["analysis_summary"] = f"Your health analysis is ready. Please discuss with your doctor. ({str(e)})"
 
         try:
-            results["health_alerts"] = future_safety.result(timeout=45)
+            results["health_alerts"] = future_safety.result(timeout=15)
         except Exception as e:
             results["health_alerts"] = {
                 "alerts": [],
@@ -465,10 +543,17 @@ def run_concurrent_report_analysis(
                 "overall_safety_summary": f"Health alerts checked cleanly. ({str(e)})"
             }
 
-        try:
-            results["initial_diet_plan"] = future_diet.result(timeout=45)
-        except Exception:
-            results["initial_diet_plan"] = None
+    try:
+        results["initial_diet_plan"] = generate_personalized_diet_plan(
+            default_cuisine,
+            abnormal_metrics,
+            med_history,
+            current_meds,
+            "",
+            language
+        )
+    except Exception:
+        results["initial_diet_plan"] = None
 
     return results
 

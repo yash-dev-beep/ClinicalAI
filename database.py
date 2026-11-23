@@ -78,6 +78,11 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN password TEXT")
         except Exception:
             pass
+    if "password_hash" not in user_cols:
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        except Exception:
+            pass
     if "language" not in user_cols:
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'English'")
@@ -88,6 +93,18 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT DEFAULT 'English'")
         except Exception:
             pass
+
+    # Synchronize legacy columns if present
+    try:
+        if "pin_hash" in user_cols:
+            cursor.execute("UPDATE users SET password_hash = pin_hash WHERE (password_hash IS NULL OR password_hash = '') AND pin_hash IS NOT NULL")
+        if "password" in user_cols:
+            cursor.execute("UPDATE users SET password_hash = password WHERE (password_hash IS NULL OR password_hash = '') AND password IS NOT NULL")
+            cursor.execute("UPDATE users SET password = password_hash WHERE (password IS NULL OR password = '') AND password_hash IS NOT NULL")
+        if "full_name" in user_cols and "name" in user_cols:
+            cursor.execute("UPDATE users SET name = full_name WHERE (name IS NULL OR name = '') AND full_name IS NOT NULL")
+    except Exception:
+        pass
 
     # 2. Reports Table with UNIQUE(user_id, report_date)
     cursor.execute("""
@@ -250,10 +267,25 @@ def register_user(identifier: str, password: str, preferred_language: str = "Eng
     try:
         with conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (identifier, name, pin, password, password_hash, language, preferred_language)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (clean_id, user_name, clean_pin, pw_hash, pw_hash, preferred_language, preferred_language))
+            cursor.execute("PRAGMA table_info(users)")
+            cols = {row["name"] for row in cursor.fetchall()}
+
+            insert_cols = ["identifier", "name", "pin", "password", "language", "preferred_language"]
+            insert_vals = [clean_id, user_name, clean_pin, pw_hash, preferred_language, preferred_language]
+
+            if "password_hash" in cols:
+                insert_cols.append("password_hash")
+                insert_vals.append(pw_hash)
+            if "pin_hash" in cols:
+                insert_cols.append("pin_hash")
+                insert_vals.append(pw_hash)
+            if "full_name" in cols:
+                insert_cols.append("full_name")
+                insert_vals.append(user_name)
+
+            placeholders = ", ".join(["?"] * len(insert_cols))
+            col_names = ", ".join(insert_cols)
+            cursor.execute(f"INSERT INTO users ({col_names}) VALUES ({placeholders})", insert_vals)
             user_id = cursor.lastrowid
             return {
                 "id": user_id,
@@ -274,24 +306,26 @@ def authenticate_user(identifier: str, password: str) -> Optional[Dict[str, Any]
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, name, pin, password, password_hash, language, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
+        cursor.execute("SELECT * FROM users WHERE identifier = ?", (clean_id,))
         row = cursor.fetchone()
         if not row:
             return None
         
-        stored_pin = row["pin"]
-        stored_pw = row["password"] or row["password_hash"]
+        row_keys = row.keys()
+        stored_pin = row["pin"] if "pin" in row_keys else None
+        stored_pw = (row["password"] if "password" in row_keys else None) or (row["password_hash"] if "password_hash" in row_keys else None) or (row["pin_hash"] if "pin_hash" in row_keys else None)
         
         # Check plain PIN or hashed password
-        if (stored_pin and candidate == str(stored_pin).strip()) or verify_password(candidate, stored_pw):
-            display_name = row["name"] or row["identifier"].split("@")[0].capitalize()
+        if (stored_pin and candidate == str(stored_pin).strip()) or (stored_pw and verify_password(candidate, stored_pw)):
+            display_name = (row["name"] if "name" in row_keys else None) or (row["full_name"] if "full_name" in row_keys else None) or row["identifier"].split("@")[0].capitalize()
+            pref_lang = (row["preferred_language"] if "preferred_language" in row_keys else None) or (row["language"] if "language" in row_keys else None) or "English"
             return {
                 "id": row["id"],
                 "identifier": row["identifier"],
                 "name": display_name,
-                "preferred_language": row["preferred_language"] or row["language"] or "English",
-                "language": row["language"] or row["preferred_language"] or "English",
-                "created_at": row["created_at"]
+                "preferred_language": pref_lang,
+                "language": pref_lang,
+                "created_at": row["created_at"] if "created_at" in row_keys else None
             }
         return None
     finally:
@@ -306,11 +340,22 @@ def reset_user_pin(identifier: str, new_pin: str) -> bool:
     try:
         with conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users 
-                SET pin = ?, password = ?, password_hash = ? 
-                WHERE identifier = ?
-            """, (pin_str, pw_hash, pw_hash, clean_id))
+            cursor.execute("PRAGMA table_info(users)")
+            cols = {row["name"] for row in cursor.fetchall()}
+
+            set_clauses = ["pin = ?", "password = ?"]
+            vals = [pin_str, pw_hash]
+
+            if "password_hash" in cols:
+                set_clauses.append("password_hash = ?")
+                vals.append(pw_hash)
+            if "pin_hash" in cols:
+                set_clauses.append("pin_hash = ?")
+                vals.append(pw_hash)
+
+            vals.append(clean_id)
+            set_str = ", ".join(set_clauses)
+            cursor.execute(f"UPDATE users SET {set_str} WHERE identifier = ?", vals)
             return cursor.rowcount > 0
     except Exception:
         return False
@@ -333,13 +378,13 @@ def get_user_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, name, pin, language, preferred_language, created_at FROM users WHERE identifier = ?", (clean_id,))
+        cursor.execute("SELECT * FROM users WHERE identifier = ?", (clean_id,))
         row = cursor.fetchone()
         if not row:
             return None
         d = dict(row)
         if not d.get("name"):
-            d["name"] = d["identifier"].split("@")[0].capitalize()
+            d["name"] = d.get("full_name") or d["identifier"].split("@")[0].capitalize()
         return d
     finally:
         conn.close()
@@ -349,13 +394,13 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, identifier, name, pin, language, preferred_language, created_at FROM users WHERE id = ?", (user_id,))
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
         row = cursor.fetchone()
         if not row:
             return None
         d = dict(row)
         if not d.get("name"):
-            d["name"] = d["identifier"].split("@")[0].capitalize()
+            d["name"] = d.get("full_name") or d["identifier"].split("@")[0].capitalize()
         return d
     finally:
         conn.close()
@@ -420,9 +465,28 @@ def verify_and_reset_password(identifier: str, otp_code: str, new_password: str)
             pass
 
         # Update password in users table
-        pw_hash = hash_password(new_password.strip())
+        clean_pin = new_password.strip()
+        pw_hash = hash_password(clean_pin)
         with conn:
-            conn.execute("UPDATE users SET password = ?, password_hash = ? WHERE identifier = ?", (pw_hash, pw_hash, clean_id))
+            cursor.execute("PRAGMA table_info(users)")
+            cols = {r["name"] for r in cursor.fetchall()}
+            set_clauses = []
+            vals = []
+            if "password" in cols:
+                set_clauses.append("password = ?")
+                vals.append(pw_hash)
+            if "password_hash" in cols:
+                set_clauses.append("password_hash = ?")
+                vals.append(pw_hash)
+            if "pin" in cols:
+                set_clauses.append("pin = ?")
+                vals.append(clean_pin)
+            if "pin_hash" in cols:
+                set_clauses.append("pin_hash = ?")
+                vals.append(pw_hash)
+            if set_clauses:
+                vals.append(clean_id)
+                conn.execute(f"UPDATE users SET {', '.join(set_clauses)} WHERE identifier = ?", tuple(vals))
             conn.execute("DELETE FROM password_resets WHERE identifier = ?", (clean_id,))
         return True, "Password reset successfully!"
     except Exception as e:
