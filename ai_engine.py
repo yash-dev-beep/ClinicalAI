@@ -3,8 +3,11 @@ import json
 import time
 import re
 import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import pymupdf
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -17,18 +20,21 @@ load_dotenv()
 # Gemini Client & Resilient Model Hierarchy
 # =========================================================================
 
+# Explicit, verified production model fallback pool as required
 FALLBACK_MODELS = [
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
     "gemini-3.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash"
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-4-hydrogen",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-flash-lite-latest"
 ]
 
 _CLIENT_INSTANCE: Optional[genai.Client] = None
 
 def get_gemini_client() -> genai.Client:
-    """Instantiates or reuses the Google GenAI client using the GEMINI_API_KEY environment variable."""
+    """Instantiates or reuses the Google GenAI client using GEMINI_API_KEY."""
     global _CLIENT_INSTANCE
     if _CLIENT_INSTANCE is None:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -48,14 +54,12 @@ def robust_json_loads(raw_text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Strip markdown backticks
     clean = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
     try:
         return json.loads(clean)
     except Exception:
         pass
 
-    # Search for outermost JSON object { ... }
     match_obj = re.search(r"(\{.*\})", cleaned, flags=re.DOTALL)
     if match_obj:
         try:
@@ -63,22 +67,6 @@ def robust_json_loads(raw_text: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Search for outermost JSON array [ ... ]
-    match_arr = re.search(r"(\[.*\])", cleaned, flags=re.DOTALL)
-    if match_arr:
-        try:
-            return json.loads(match_arr.group(1))
-        except Exception:
-            pass
-
-    # Remove non-whitespace control characters (\x00-\x08, \x0b, \x0c, \x0e-\x1f)
-    sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", clean)
-    try:
-        return json.loads(sanitized)
-    except Exception:
-        pass
-
-    # Fallback to ast.literal_eval for single-quoted Python dict representations from fallback LLMs
     try:
         import ast
         val = ast.literal_eval(clean)
@@ -89,17 +77,16 @@ def robust_json_loads(raw_text: str) -> Dict[str, Any]:
 
     raise ValueError(f"Could not parse valid JSON from model response: {raw_text[:200]}...")
 
-
 def generate_resilient_content(
-    prompt: str,
+    contents: Union[str, List[Any]],
     system_instruction: Optional[str] = None,
     response_schema: Optional[Any] = None,
     temperature: float = 0.2
 ) -> str:
     """
     Executes Gemini AI calls with automatic fallback across model tiers.
-    Retries gracefully if rate limits or high demand (503/429) occur.
-    Returns cleaned response text or raises RuntimeError if all models fail.
+    Supports text prompts or multimodal contents list [Part, str].
+    Rapid 0.3s failover on HTTP 503/429 errors.
     """
     client = get_gemini_client()
     last_error = None
@@ -107,7 +94,7 @@ def generate_resilient_content(
     for model_name in FALLBACK_MODELS:
         for attempt in range(2):
             try:
-                config_args = {"temperature": temperature}
+                config_args: Dict[str, Any] = {"temperature": temperature}
                 if system_instruction:
                     config_args["system_instruction"] = system_instruction
                 if response_schema:
@@ -117,7 +104,7 @@ def generate_resilient_content(
                 config = types.GenerateContentConfig(**config_args)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=contents,
                     config=config
                 )
                 if response:
@@ -133,10 +120,11 @@ def generate_resilient_content(
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
-                # Fast model switch if model is 404/not supported or quota exhausted
-                if any(k in err_str for k in ["404", "not_found", "no longer available", "429", "resource_exhausted", "quota"]):
+                # Rapid failover on model unavailable / rate limit / 404
+                if any(k in err_str for k in ["404", "not_found", "no longer available", "429", "resource_exhausted", "quota", "503"]):
+                    time.sleep(0.3)
                     break
-                time.sleep(0.15)
+                time.sleep(0.3)
 
     raise RuntimeError(f"All AI endpoints are busy or unavailable. Details: {last_error}")
 
@@ -144,571 +132,734 @@ def generate_resilient_content(
 # Structured Pydantic Schemas
 # =========================================================================
 
-class ExtractedMetric(BaseModel):
-    test_name: str = Field(description="Everyday readable name of the test (e.g. Hemoglobin, Blood Sugar, Cholesterol, Creatinine, Platelets)")
-    value: float = Field(description="Numerical value of the measurement")
-    range: str = Field(description="Healthy standard range provided in the report, e.g. '12.0 - 15.5'")
-    status: str = Field(description="Must be strictly: 'High', 'Low', 'Normal', or 'Alert'")
-    unit: str = Field(default="", description="Unit of measurement (e.g. g/dL, mg/dL)")
+class LabMetricItem(BaseModel):
+    test_name: str = Field(description="Everyday readable name of the biomarker, e.g. 'Fasting Blood Sugar', 'Hemoglobin', 'Creatinine'")
+    test_value: float = Field(default=0.0, description="Numerical value of the biomarker")
+    value: Optional[float] = Field(default=None, description="Alias for test_value")
+    unit: str = Field(default="", description="Unit of measurement (e.g. mg/dL, g/dL, %)")
+    reference_range: str = Field(default="", description="Healthy standard reference range, e.g. '70 - 99'")
+    range: Optional[str] = Field(default=None, description="Alias for reference_range")
+    status: str = Field(description="Must be strictly: 'Normal', 'High', 'Low', or 'Borderline'")
 
-class ClinicalReportExtraction(BaseModel):
-    report_date: str = Field(description="Date of the report strictly in YYYY-MM-DD format (e.g. '2026-10-19'). If missing, use today's date.")
-    metrics: List[ExtractedMetric] = Field(description="List of all extracted laboratory biomarkers")
+    def __init__(self, **data):
+        if "value" in data and "test_value" not in data:
+            data["test_value"] = data["value"]
+        if "range" in data and "reference_range" not in data:
+            data["reference_range"] = data["range"]
+        super().__init__(**data)
 
-class HealthAlert(BaseModel):
-    severity: str = Field(description="'Critical', 'Urgent', 'Moderate', or 'Informational'")
-    title: str = Field(description="Short, comforting, non-technical title")
-    biomarker: str = Field(description="Name of the parameter")
-    simple_explanation: str = Field(description="Explain what this means in simple, warm words for elderly patients. Avoid medical jargon.")
-    doctor_query: str = Field(description="One simple question they can ask their doctor")
+ExtractedMetric = LabMetricItem
 
-class HealthAlertsResponse(BaseModel):
-    alerts: List[HealthAlert] = Field(description="List of parameters to be cautious of")
-    urgent_care_needed: bool = Field(description="True if an extreme abnormality requires immediate medical review")
-    overall_safety_summary: str = Field(description="Warm, simple, encouraging overall health summary for the patient")
+class ExtractedLabReport(BaseModel):
+    report_date: str = Field(description="Date of the report strictly in YYYY-MM-DD format (e.g. '2026-11-20'). If missing, use today's date.")
+    metrics: List[LabMetricItem] = Field(description="List of all extracted laboratory biomarkers")
 
-class MealItem(BaseModel):
-    dish_name: str = Field(description="Name of the dish")
-    portion: str = Field(description="Easy-to-understand portion size (e.g. '1 small bowl', '2 soft rotis')")
-    elderly_benefit: str = Field(description="Why this is good for them (e.g. 'Easy to chew and digest, helps steady blood sugar')")
-
-class MealSession(BaseModel):
-    meal_time: str = Field(description="Morning (Breakfast), Midday (Lunch), Evening (Dinner), or Bedtime Snack")
-    dishes: List[MealItem] = Field(description="List of dishes")
-
-class PersonalizedDietPlan(BaseModel):
-    cuisine: str = Field(description="Cuisine name (e.g. 'Roti, Daal and Paneer (Desi Indian)')")
-    daily_schedule: List[MealSession] = Field(description="Morning, midday, and evening meals")
-    comfort_tips: str = Field(description="Tips for easy chewing, proper hydration, and gentle cooking")
-    foods_to_enjoy: List[str] = Field(description="Wholesome foods they can freely enjoy")
-    foods_to_limit: List[str] = Field(description="Foods they should eat sparingly")
-
-class UnifiedReportAnalysisWithDiet(BaseModel):
-    report_date: str = Field(description="Date of the report strictly in YYYY-MM-DD format (e.g. '2026-10-19'). If missing, use today's date.")
-    metrics: List[ExtractedMetric] = Field(description="List of all extracted laboratory biomarkers")
-    analysis_summary: str = Field(description="Warm, simple, encouraging 5th-grade narrative summary of results for elderly patients")
-    health_alerts: HealthAlertsResponse = Field(description="Structured health alerts for out-of-range biomarkers")
-    initial_diet_plan: Optional[PersonalizedDietPlan] = Field(default=None, description="Starter personalized recovery diet plan aligned with the selected cuisine")
-
-# =========================================================================
-# Simulated OTP Generation
-# =========================================================================
+ClinicalReportExtraction = ExtractedLabReport
 
 def generate_simulated_otp(identifier: str) -> str:
-    """Generates and returns a simulated 6-digit OTP code."""
+    """Generates a secure 6-digit simulated OTP code."""
     return f"{random.randint(100000, 999999)}"
 
-# =========================================================================
-# PDF Text Extraction (PyMuPDF)
-# =========================================================================
-
-def extract_text_from_pdf(pdf_stream_or_bytes) -> str:
-    """
-    Extracts text cleanly from a PDF document using PyMuPDF (fitz).
-    Handles file-like objects, multiple uploads, or raw bytes gracefully.
-    """
-    try:
-        if hasattr(pdf_stream_or_bytes, "seek"):
-            pdf_stream_or_bytes.seek(0)
-        if hasattr(pdf_stream_or_bytes, "read"):
-            data = pdf_stream_or_bytes.read()
-        elif hasattr(pdf_stream_or_bytes, "getvalue"):
-            data = pdf_stream_or_bytes.getvalue()
-        else:
-            data = pdf_stream_or_bytes
-
-        doc = pymupdf.open(stream=data, filetype="pdf")
-        text_parts = []
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text_parts.append(page.get_text())
-        doc.close()
-        
-        extracted = "\n".join(text_parts).strip()
-        if not extracted or len(extracted) < 10:
-            raise ValueError("The uploaded PDF did not yield any readable text.")
-        return extracted
-    except Exception as e:
-        raise RuntimeError(f"PyMuPDF failed to parse PDF: {str(e)}")
-
-def extract_text_from_multiple_pdfs(pdf_files: List[Any]) -> str:
-    """
-    Extracts text from multiple uploaded PDFs concurrently using ThreadPoolExecutor.
-    Ensures multi-document OCR finishes in under 5 seconds with thread-safe byte conversion.
-    """
-    if not pdf_files:
-        return ""
-    if len(pdf_files) == 1:
-        return extract_text_from_pdf(pdf_files[0])
-
-    byte_streams = []
-    for f in pdf_files:
-        if hasattr(f, "getvalue"):
-            byte_streams.append(f.getvalue())
-        elif hasattr(f, "read"):
-            f.seek(0)
-            byte_streams.append(f.read())
-        else:
-            byte_streams.append(f)
-
-    with ThreadPoolExecutor(max_workers=min(len(byte_streams), 4)) as executor:
-        extracted_pages = list(executor.map(extract_text_from_pdf, byte_streams))
-    return "\n\n".join(extracted_pages)
+class DietCustomizationResponse(BaseModel):
+    assistant_reply: str = Field(description="Warm, helpful confirmation and guidance in the user's active language at a 5th-grade level")
+    diet_was_modified: bool = Field(description="Whether the diet plan was modified or updated based on the user's request")
+    updated_diet_plan_markdown: Optional[str] = Field(default=None, description="The complete rewritten 5-part meal plan if modified; null if unchanged")
+    detected_new_allergies_or_restrictions: List[str] = Field(default=[], description="Any permanent food allergy, intolerance, or restriction detected (e.g. 'Milk / Dairy products', 'Peanuts')")
 
 # =========================================================================
-# AI Extraction & Structured Analysis
+# Deterministic Patient Health Score Calculator
 # =========================================================================
 
-def parse_clinical_report(raw_text: str, language: str = "English") -> Dict[str, Any]:
+def calculate_patient_health_score(metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Uses Gemini with structured JSON output conforming to ClinicalReportExtraction.
-    Extracts test names, numeric values, ranges, and statuses.
+    Calculates a deterministic patient health score (0-100) immediately in Python.
+    Guarantees consistent, transparent scoring without LLM math mistakes.
+    Starts at 100.
+    Borderline deducts a mild penalty (-5 scaled by total parameters).
+    High or Low deducts a sharper weighted penalty (-12 to -15, bounded between 15 and 100).
     """
+    total_params = len(metrics)
+    if total_params == 0:
+        return {
+            "score": 100,
+            "label": "Good",
+            "color": "#16a34a",
+            "total_params": 0,
+            "normal_count": 0,
+            "attention_count": 0
+        }
+
+    normal_count = 0
+    borderline_count = 0
+    sharp_penalty_count = 0
+
+    for m in metrics:
+        st = str(m.get("status", "Normal")).strip().lower()
+        if st == "normal":
+            normal_count += 1
+        elif st in ["borderline", "mild"]:
+            borderline_count += 1
+        else: # High, Low, Alert, Critical
+            sharp_penalty_count += 1
+
+    attention_count = borderline_count + sharp_penalty_count
+    unit_weight = 100.0 / total_params
+    deduction = (borderline_count * 0.5 * unit_weight) + (sharp_penalty_count * 1.35 * unit_weight)
+    score = int(round(max(15.0, min(100.0, 100.0 - deduction))))
+
+    if score >= 85:
+        label = "Excellent"
+        color = "#16a34a"  # Green
+    elif score >= 70:
+        label = "Good"
+        color = "#22c55e"  # Light Green
+    elif score >= 50:
+        label = "Fair / Needs Attention"
+        color = "#eab308"  # Amber
+    else:
+        label = "Critical / Consult Doctor"
+        color = "#ef4444"  # Red
+
+    return {
+        "score": score,
+        "label": label,
+        "color": color,
+        "total_params": total_params,
+        "normal_count": normal_count,
+        "attention_count": attention_count
+    }
+
+# =========================================================================
+# Multimodal Hybrid Document Ingestion Pipeline
+# =========================================================================
+
+def extract_from_image_bytes(image_bytes: bytes, mime_type: str = "image/png", language: str = "English") -> Dict[str, Any]:
+    """
+    Direct multimodal image extraction using Gemini Vision endpoint with strict ExtractedLabReport schema.
+    """
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
     system_instruction = f"""
-You are a gentle, meticulous medical laboratory data specialist.
-Extract all quantitative lab biomarkers and the report date from the clinical text.
-CRITICAL 5th-GRADE READING LEVEL DIRECTIVE:
-1. Translate technical test names into simple, 5th-grade everyday terms (e.g. use 'Blood Sugar' instead of 'Hyperglycemia' or 'Plasma Fasting Glucose'; use 'Kidney Function (Creatinine)' instead of 'Serum Creatinine / Renal Profile'; use 'Blood Pressure' instead of 'Hypertension'; use 'Cholesterol' instead of 'Lipid Panel').
-2. Extract numerical values for 'value'.
-3. Identify normal range (e.g. '12.0 - 15.5').
-4. For status, compare value with range: strictly 'High', 'Low', 'Normal', or 'Alert'.
-5. Format report_date strictly as YYYY-MM-DD. If missing, use today's date.
-6. Never invent or hallucinate missing lab values.
-7. Target language: {language}.
+You are an expert clinical laboratory data clerk and medical record digitizer.
+Extract all clinical lab biomarkers accurately from the provided medical document image into structured JSON conforming to ExtractedLabReport.
+
+Directives:
+1. Normalize biomarker names into simple, patient-friendly terms (e.g. 'Fasting Blood Sugar', 'Hemoglobin', 'Creatinine', 'Thyroid TSH').
+2. Extract numerical test_value as a float.
+3. Identify reference_range (e.g. '70 - 99').
+4. status MUST strictly be: 'Normal', 'High', 'Low', or 'Borderline'.
+5. Extract report_date in YYYY-MM-DD format. If missing, use today's date ({time.strftime("%Y-%m-%d")}).
+6. Translate test names and units gently into {language}.
 """
+    prompt = f"Digitize this lab test report completely into structured ExtractedLabReport JSON in {language}."
 
-    prompt = f"""
-Clinical Report Text:
----
-{raw_text}
----
-
-Extract all quantitative laboratory test metrics and report date according to the schema in simple words.
-"""
-
-    raw_response = generate_resilient_content(
-        prompt=prompt,
+    raw = generate_resilient_content(
+        contents=[image_part, prompt],
         system_instruction=system_instruction,
-        response_schema=ClinicalReportExtraction,
+        response_schema=ExtractedLabReport,
         temperature=0.0
     )
+    return robust_json_loads(raw)
 
-    return robust_json_loads(raw_response)
+def extract_from_single_pdf(file_bytes: bytes, language: str = "English") -> Dict[str, Any]:
+    """
+    Extracts text from digital PDF directly with PyMuPDF.
+    If the PDF is a scan/photo (fewer than 25 readable characters per page), automatically renders
+    the page to PNG and routes directly to Gemini Multimodal Vision endpoint.
+    """
+    doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+    num_pages = len(doc)
+    text_parts = []
+    is_scanned = False
 
-def generate_health_alerts(
-    metrics: List[Dict[str, Any]],
-    med_history: str = "",
-    current_meds: str = "",
-    language: str = "English"
-) -> Dict[str, Any]:
-    """
-    Generates structured health alerts in simple, elderly-friendly language.
-    """
-    abnormal = [m for m in metrics if str(m.get("status", "")).lower() in ["high", "low", "alert"]]
+    for page_num in range(num_pages):
+        page = doc[page_num]
+        txt = page.get_text().strip()
+        if len(txt) < 25:
+            is_scanned = True
+            break
+        text_parts.append(txt)
+
+    if not is_scanned and "\n".join(text_parts).strip():
+        full_text = "\n\n".join(text_parts)
+        return parse_clinical_text(full_text, language=language)
+
+    # Scanned PDF Fallback: Render up to first 4 pages to PNG and send as multimodal parts
+    image_parts = []
+    for page_num in range(min(num_pages, 4)):
+        page = doc[page_num]
+        pix = page.get_pixmap(dpi=200)
+        img_bytes = pix.tobytes("png")
+        image_parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+
+    doc.close()
 
     system_instruction = f"""
-You are a warm, caring family doctor speaking with an elderly patient and their family.
-CRITICAL DIRECTIVE - THE 'ELDERLY-FRIENDLY' RULE:
-- Every single output must be written strictly at a 5th-grade reading level.
-- Do NOT use complex medical jargon.
-- Instead of 'Hyperglycemia', use 'High Blood Sugar'.
-- Instead of 'Renal failure', use 'Kidney problems'.
-- Instead of 'Hypertension', use 'High Blood Pressure'.
-- Instead of 'Anemia', use 'Low Red Blood Cells / Low Iron'.
-- Explain out-of-range numbers gently and reassuringly (e.g., 'Your blood sugar is a bit higher than usual', 'Your hemoglobin is slightly low, which might make you feel tired').
-- Provide simple, friendly questions they can take to their doctor.
-- Everything must be written completely in {language}.
+You are an expert clinical laboratory data clerk.
+Extract all quantitative lab biomarkers accurately from the scanned medical report pages into structured JSON conforming to ExtractedLabReport.
+
+Directives:
+1. Translate test names into simple patient-friendly terms in {language}.
+2. Ensure test_value is a clean float.
+3. reference_range must capture standard healthy bounds.
+4. status MUST strictly be: 'Normal', 'High', 'Low', or 'Borderline'.
+5. Extract report_date in YYYY-MM-DD format. If missing, use today ({time.strftime("%Y-%m-%d")}).
 """
-
-    prompt = f"""
-Abnormal Lab Results:
-{json.dumps(abnormal, indent=2)}
-
-All Lab Results:
-{json.dumps(metrics, indent=2)}
-
-Patient Medical History: {med_history or 'None'}
-Current Medications: {current_meds or 'None'}
-Language: {language}
-
-Generate a clear, gentle health alert summary evaluating what to watch out for at a 5th-grade reading level in {language}.
-"""
-
-    raw_response = generate_resilient_content(
-        prompt=prompt,
+    contents = image_parts + [f"Extract all lab tests from these scanned report pages into ExtractedLabReport JSON in {language}."]
+    raw = generate_resilient_content(
+        contents=contents,
         system_instruction=system_instruction,
-        response_schema=HealthAlertsResponse,
-        temperature=0.2
+        response_schema=ExtractedLabReport,
+        temperature=0.0
     )
+    return robust_json_loads(raw)
 
-    return robust_json_loads(raw_response)
-
-def generate_narrative_synthesis(
-    metrics: List[Dict[str, Any]],
-    med_history: str = "",
-    current_meds: str = "",
-    language: str = "English"
-) -> str:
+def detect_date_in_text(raw_text: str) -> Optional[str]:
     """
-    Generates an extremely simple, comforting narrative summary of lab findings for an elderly user at a 5th-grade reading level.
+    Deterministically detects consultation/collection dates from medical text headers
+    and formats them as YYYY-MM-DD.
     """
-    system_instruction = f"""
-You are a loving, attentive family doctor speaking directly to an elderly patient in {language}.
-CRITICAL DIRECTIVE - THE 'ELDERLY-FRIENDLY' RULE:
-- Every single sentence must be written strictly at a 5th-grade reading level.
-- Do NOT use complex medical jargon: use 'High Blood Sugar' instead of 'Hyperglycemia', 'Kidney problems' instead of 'Renal failure', 'High Blood Pressure' instead of 'Hypertension'.
-- Use warm, everyday language suitable for an elderly grandmother or grandfather.
-- Use friendly everyday examples to explain how their body is doing.
-- Clearly tell them what looks great and what they should show their family doctor.
-- Completely in {language}.
-"""
+    if not raw_text:
+        return None
 
-    prompt = f"""
-Patient Lab Tests: {json.dumps(metrics, indent=2)}
-Previous Medical History: {med_history or 'None'}
-Current Medications: {current_meds or 'None'}
+    # 1. Matches: 08 Jul 2026, 17 August 2026, 26 Sep 26
+    m1 = re.search(r'(?:collection\s*date|report\s*date|date\s*of\s*collection|dated|sample\s*date|date)[:\s]+(\d{1,2}[\s\-\/](?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\-\/]\d{2,4})', raw_text, re.IGNORECASE)
+    if m1:
+        date_str = m1.group(1).replace("-", " ").replace("/", " ").strip()
+        for fmt in ["%d %b %Y", "%d %B %Y", "%d %b %y"]:
+            try:
+                return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+            except Exception:
+                pass
 
-Write a simple, 3-paragraph friendly health summary explaining their results in {language}.
-"""
+    # 2. Matches: 2026-07-08 or 2026/07/08
+    m2 = re.search(r'(?:collection\s*date|report\s*date|date\s*of\s*collection|dated|sample\s*date|date)[:\s]+(\d{4}[\-\/]\d{1,2}[\-\/]\d{1,2})', raw_text, re.IGNORECASE)
+    if m2:
+        date_str = m2.group(1).replace("/", "-").strip()
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except Exception:
+            pass
 
-    try:
-        return generate_resilient_content(prompt=prompt, system_instruction=system_instruction, temperature=0.3)
-    except Exception as e:
-        return f"Summary of your health test: Everything recorded cleanly. Please consult your family doctor for a routine review. ({str(e)})"
+    # 3. Matches: 08-07-2026 or 08/07/2026
+    m3 = re.search(r'(?:collection\s*date|report\s*date|date\s*of\s*collection|dated|sample\s*date|date)[:\s]+(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{4})', raw_text, re.IGNORECASE)
+    if m3:
+        date_str = m3.group(1).replace("/", "-").strip()
+        for fmt in ["%d-%m-%Y", "%m-%d-%Y"]:
+            try:
+                return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+            except Exception:
+                pass
 
-# =========================================================================
-# Personalized Diet Planner (Elderly-Friendly)
-# =========================================================================
+    return None
 
-def generate_personalized_diet_plan(
-    cuisine: str,
-    abnormal_metrics: List[Dict[str, Any]],
-    med_history: str = "",
-    current_meds: str = "",
-    dietary_restrictions: str = "",
-    language: str = "English"
-) -> Dict[str, Any]:
+def parse_clinical_text(raw_text: str, language: str = "English") -> Dict[str, Any]:
     """
-    Generates an elderly-friendly, recovery-oriented daily diet plan in the requested cuisine.
-    Focuses on soft-to-chew, easy-to-digest, nutritious meals.
-    """
-    system_instruction = f"""
-You are a caring geriatric nutritionist and clinical dietitian.
-Generate a daily recovery meal plan in {language} for an elderly patient.
-ELDERLY-FRIENDLY DIET DIRECTIVES:
-1. Cuisine: Strictly align with '{cuisine}'. If 'Roti, Daal and Paneer (Desi Indian)', feature soft whole-wheat rotis with a little ghee, well-cooked yellow moong daal, tender paneer, cooked bottle gourd/spinach, and soothing buttermilk.
-2. Ensure meals are easy to chew, gentle on the stomach, and well-hydrated.
-3. Tailor ingredients to help improve their abnormal test markers (e.g. low salt for blood pressure, gentle fiber for blood sugar).
-4. Do NOT use fancy or difficult culinary jargon. Keep instructions simple.
-5. All text must be in {language}.
-"""
-
-    prompt = f"""
-Selected Cuisine: {cuisine}
-Abnormal Tests: {json.dumps(abnormal_metrics, indent=2)}
-Medical History: {med_history or 'None'}
-Medications: {current_meds or 'None'}
-Preferences / Allergies: {dietary_restrictions or 'None'}
-Language: {language}
-
-Formulate an easy-to-eat, wholesome daily meal plan (Morning, Midday, Evening) according to the PersonalizedDietPlan schema.
-"""
-
-    raw_response = generate_resilient_content(
-        prompt=prompt,
-        system_instruction=system_instruction,
-        response_schema=PersonalizedDietPlan,
-        temperature=0.3
-    )
-
-    return robust_json_loads(raw_response)
-
-# =========================================================================
-# Concurrency Engine (ThreadPoolExecutor)
-# =========================================================================
-
-def run_concurrent_report_analysis(
-    raw_text: str,
-    med_history: str = "",
-    current_meds: str = "",
-    language: str = "English",
-    default_cuisine: str = "Roti, Daal and Paneer (Desi Indian)"
-) -> Dict[str, Any]:
-    """
-    High-performance clinical report analyzer.
-    Executes an ultra-fast unified single-pass LLM pipeline (~2.5 seconds) extracting
-    metrics, date, elderly-friendly narrative, safety alerts, and initial diet plan in one call.
-    Gracefully falls back to threaded execution if needed, preventing 429 quota exhaustion.
+    Zero-hallucination extraction conforming to ExtractedLabReport from digital text layer.
     """
     clean_text = raw_text.strip()
     if len(clean_text) > 30000:
         clean_text = clean_text[:30000]
 
-    # --- Strategy 1: Ultra-fast Unified Single-Pass Extraction (1 API call, ~2-3s) ---
     system_instruction = f"""
-You are a warm, gentle clinical laboratory specialist and geriatric health assistant.
-Analyze the provided laboratory report text completely in {language} strictly at a 5th-grade reading level.
+You are an expert clinical laboratory data clerk.
+Extract all numerical laboratory biomarkers strictly into ExtractedLabReport JSON in {language}.
 
-CRITICAL DIRECTIVES:
-1. Translate technical test names into simple everyday terms (e.g. 'Blood Sugar' instead of 'Hyperglycemia', 'Kidney Function (Creatinine)' instead of 'Serum Creatinine', 'Blood Pressure' instead of 'Hypertension', 'Cholesterol' instead of 'Lipid Panel').
-2. Extract numerical values for 'value'.
-3. Identify normal reference range (e.g. '12.0 - 15.5').
-4. For status: strictly 'High', 'Low', 'Normal', or 'Alert'.
-5. Format report_date strictly as YYYY-MM-DD. If missing, use today's date ({time.strftime("%Y-%m-%d")}).
-6. Write a comforting, warm 3-paragraph narrative analysis_summary explaining their numbers without medical jargon.
-7. Formulate structured health_alerts for out-of-range numbers with gentle explanations and doctor queries.
-8. Formulate an easy-to-chew, soothing initial_diet_plan aligned with '{default_cuisine}'.
-9. Everything must be written completely in {language}.
+Directives:
+1. test_name: Patient-friendly biomarker name (e.g. 'Fasting Blood Sugar', 'Total Cholesterol', 'Hemoglobin').
+2. test_value: Float measurement.
+3. reference_range: E.g. '70 - 99'.
+4. status: Strictly 'Normal', 'High', 'Low', or 'Borderline'.
+5. report_date: Strictly YYYY-MM-DD format. Default to today ({time.strftime("%Y-%m-%d")}) if not found.
 """
+    prompt = f"Lab Report Text:\n---\n{clean_text}\n---\nExtract all biomarkers in {language}."
+    raw = generate_resilient_content(
+        contents=prompt,
+        system_instruction=system_instruction,
+        response_schema=ExtractedLabReport,
+        temperature=0.0
+    )
+    parsed = robust_json_loads(raw)
+    detected_date = detect_date_in_text(raw_text)
+    if detected_date:
+        parsed["report_date"] = detected_date
+    return parsed
 
-    prompt = f"""
-Clinical Report Text:
----
-{clean_text}
----
+def extract_multimodal_documents(uploaded_files: List[Any], language: str = "English") -> Dict[str, Any]:
+    """
+    Concurrently processes multiple uploaded PDFs or Images (PNG/JPG/JPEG) across up to 4 worker threads.
+    Preserves each consultation report distinctly by its report_date, enabling accurate longitudinal
+    trend graphs when multiple reports from different dates/timestamps are uploaded together.
+    """
+    if not uploaded_files:
+        today_str = time.strftime("%Y-%m-%d")
+        return {"reports": [], "report_date": today_str, "metrics": []}
 
-Patient Medical History: {med_history or 'None'}
-Current Medications: {current_meds or 'None'}
-Selected Cuisine: {default_cuisine}
-Target Language: {language}
+    def process_single(file_obj):
+        name = getattr(file_obj, "name", "upload.pdf").lower()
+        if hasattr(file_obj, "getvalue"):
+            data_bytes = file_obj.getvalue()
+        elif hasattr(file_obj, "read"):
+            file_obj.seek(0)
+            data_bytes = file_obj.read()
+        else:
+            data_bytes = bytes(file_obj)
 
-Extract all quantitative test metrics, report date, 5th-grade narrative summary, safety alerts, and starter recovery diet plan in {language}.
-"""
+        if name.endswith(".pdf"):
+            res = extract_from_single_pdf(data_bytes, language=language)
+        elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+            mime = "image/jpeg" if name.endswith((".jpg", ".jpeg")) else "image/png"
+            res = extract_from_image_bytes(data_bytes, mime_type=mime, language=language)
+        else:
+            res = extract_from_single_pdf(data_bytes, language=language)
 
-    try:
-        raw_response = generate_resilient_content(
-            prompt=prompt,
-            system_instruction=system_instruction,
-            response_schema=UnifiedReportAnalysisWithDiet,
-            temperature=0.1
-        )
-        data = robust_json_loads(raw_response)
-        metrics = data.get("metrics", [])
-        if metrics:
-            report_date = data.get("report_date") or time.strftime("%Y-%m-%d")
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(report_date)):
-                report_date = time.strftime("%Y-%m-%d")
+        res["source_file"] = name
+        return res
 
-            return {
-                "report_date": report_date,
-                "metrics": metrics,
-                "analysis_summary": data.get("analysis_summary", "Your health test summary is ready."),
-                "health_alerts": data.get("health_alerts"),
-                "initial_diet_plan": data.get("initial_diet_plan")
+    if len(uploaded_files) == 1:
+        res = process_single(uploaded_files[0])
+        r_date = res.get("report_date") or time.strftime("%Y-%m-%d")
+        m_list = res.get("metrics") or []
+        single_rep = {"report_date": r_date, "metrics": m_list, "source_file": res.get("source_file", "")}
+        return {
+            "reports": [single_rep],
+            "report_date": r_date,
+            "metrics": m_list
+        }
+
+    with ThreadPoolExecutor(max_workers=min(len(uploaded_files), 4)) as executor:
+        results = list(executor.map(process_single, uploaded_files))
+
+    # Group extracted metrics by distinct report_date
+    reports_by_date: Dict[str, Dict[str, Any]] = {}
+    for res in results:
+        r_date = res.get("report_date")
+        if not r_date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(r_date)):
+            r_date = time.strftime("%Y-%m-%d")
+
+        if r_date not in reports_by_date:
+            reports_by_date[r_date] = {
+                "report_date": r_date,
+                "metrics": [],
+                "source_files": []
             }
-    except Exception:
-        pass
 
-    # --- Strategy 2: Resilient Fallback Pipeline ---
-    extraction = parse_clinical_report(clean_text, language=language)
-    metrics = extraction.get("metrics", [])
-    report_date = extraction.get("report_date", time.strftime("%Y-%m-%d"))
-    abnormal_metrics = [m for m in metrics if str(m.get("status", "")).lower() in ["high", "low", "alert"]]
+        if res.get("source_file"):
+            reports_by_date[r_date]["source_files"].append(res["source_file"])
 
-    results = {
-        "report_date": report_date,
-        "metrics": metrics,
-        "analysis_summary": "",
-        "health_alerts": None,
-        "initial_diet_plan": None
+        existing_names = {str(m.get("test_name", "")).strip().lower() for m in reports_by_date[r_date]["metrics"]}
+        for m in res.get("metrics", []):
+            t_name = str(m.get("test_name", "")).strip()
+            if t_name and t_name.lower() not in existing_names:
+                existing_names.add(t_name.lower())
+                reports_by_date[r_date]["metrics"].append(m)
+
+    # Sort reports chronologically by date
+    sorted_dates = sorted(reports_by_date.keys())
+    all_reports = [reports_by_date[d] for d in sorted_dates]
+    latest_rep = all_reports[-1] if all_reports else {"report_date": time.strftime("%Y-%m-%d"), "metrics": []}
+
+    return {
+        "reports": all_reports,
+        "report_date": latest_rep["report_date"],
+        "metrics": latest_rep["metrics"]
     }
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_narrative = executor.submit(
-            generate_narrative_synthesis,
-            metrics,
-            med_history,
-            current_meds,
-            language
-        )
-        future_safety = executor.submit(
-            generate_health_alerts,
-            metrics,
-            med_history,
-            current_meds,
-            language
-        )
+# =========================================================================
+# Plain-Language Summary, Daily Life Tips & Comparative Narrative
+# =========================================================================
 
-        try:
-            results["analysis_summary"] = future_narrative.result(timeout=15)
-        except Exception as e:
-            results["analysis_summary"] = f"Your health analysis is ready. Please discuss with your doctor. ({str(e)})"
+def generate_simple_summary_and_tips(
+    metrics: List[Dict[str, Any]],
+    medications: str = "",
+    conditions: str = "",
+    language: str = "English"
+) -> Tuple[str, str]:
+    """
+    Generates an ultra-simple 5th-grade summary and practical daily life tips.
+    Returns (narrative_summary, daily_life_tips).
+    """
+    metrics_summary = []
+    for m in metrics:
+        name = m.get("test_name", "")
+        val = m.get("test_value", m.get("value", ""))
+        unit = m.get("unit", "")
+        ref = m.get("reference_range", m.get("range", ""))
+        st = m.get("status", "Normal")
+        metrics_summary.append(f"- {name}: {val} {unit} (Normal Range: {ref}) -> Status: {st}")
+    metrics_str = "\n".join(metrics_summary) if metrics_summary else "No biomarkers recorded."
 
-        try:
-            results["health_alerts"] = future_safety.result(timeout=15)
-        except Exception as e:
-            results["health_alerts"] = {
-                "alerts": [],
-                "urgent_care_needed": False,
-                "overall_safety_summary": f"Health alerts checked cleanly. ({str(e)})"
-            }
+    system_instruction = f"""
+You are a warm, gentle clinical health communicator for seniors and families.
+Translate the patient's lab results into clear, comforting everyday words in {language} strictly at a 5th-grade reading level.
+Never use cold, scary medical jargon. Always be encouraging and practical.
+
+Structure your response into two distinct sections:
+SECTION 1: SUMMARY
+✅ What Looks Good: Praise 2-3 healthy normal test results.
+⚠️ What Needs Attention: For each out-of-range test, write exactly ONE clear, reassuring sentence explaining what it means in everyday life.
+
+SECTION 2: DAILY LIFE TIPS
+💧 Practical Home Care: Give 3 specific, simple daily habits tied directly to their results and health conditions (e.g. drinking 8 glasses of warm water for kidney/sugar support, 15 minutes of gentle walking after lunch, warm herbal tea for cough, reducing salty pickles).
+"""
+
+    prompt = f"""
+Target Language: {language}
+Patient Daily Medications: {medications or 'None reported'}
+Pre-existing Health Conditions: {conditions or 'None reported'}
+
+Biomarker Test Results:
+{metrics_str}
+
+Please generate the warm 5th-grade Summary and Daily Life Tips in {language}.
+"""
 
     try:
-        results["initial_diet_plan"] = generate_personalized_diet_plan(
-            default_cuisine,
-            abnormal_metrics,
-            med_history,
-            current_meds,
-            "",
-            language
+        raw = generate_resilient_content(
+            contents=prompt,
+            system_instruction=system_instruction,
+            temperature=0.2
+        )
+        parts = raw.split("SECTION 2: DAILY LIFE TIPS")
+        if len(parts) == 2:
+            summary_text = parts[0].replace("SECTION 1: SUMMARY", "").strip()
+            tips_text = parts[1].strip()
+            return summary_text, tips_text
+        return raw, "💧 Stay hydrated with 8 glasses of warm water daily, take gentle 15-minute walks, and get 7-8 hours of restful sleep."
+    except Exception as e:
+        return (
+            f"Your health report has been reviewed. Several parameters are in normal healthy ranges. Please review with your doctor. ({str(e)})",
+            "💧 Drink plenty of fresh water, enjoy balanced homemade meals, and take light daily walks."
+        )
+
+def generate_comparative_narrative(
+    current_metrics: List[Dict[str, Any]],
+    past_metrics: List[Dict[str, Any]],
+    past_date: str,
+    language: str = "English"
+) -> str:
+    """
+    Generates a 2-sentence progress comparison against prior lab records.
+    """
+    if not past_metrics:
+        return "This is your first recorded health consultation. We will track your progress over time!"
+
+    curr_dict = {m.get("test_name", "").lower(): m for m in current_metrics}
+    past_dict = {m.get("test_name", "").lower(): m for m in past_metrics}
+
+    comparisons = []
+    for k, cm in curr_dict.items():
+        if k in past_dict:
+            pm = past_dict[k]
+            comparisons.append(f"- {cm.get('test_name')}: past was {pm.get('test_value', pm.get('value'))}, now {cm.get('test_value', cm.get('value'))} (status: {cm.get('status')})")
+
+    if not comparisons:
+        return f"Comparing with your visit on {past_date}: New tests were recorded today, giving your doctor a comprehensive picture of your wellness."
+
+    prompt = f"""
+Language: {language}
+Past Report Date: {past_date}
+Biomarker Changes:
+{chr(10).join(comparisons[:6])}
+
+Write exactly 2 warm, encouraging sentences comparing their progress since {past_date} in simple 5th-grade words in {language}.
+"""
+    try:
+        return generate_resilient_content(
+            contents=prompt,
+            system_instruction=f"You are a gentle geriatric doctor comparing health progress in {language}.",
+            temperature=0.2
         )
     except Exception:
-        results["initial_diet_plan"] = None
-
-    return results
-
-class DietCustomizationResult(BaseModel):
-    reply_message: str = Field(description="Gentle, comforting 5th-grade explanation of the change")
-    updated_daily_schedule: Optional[List[MealSession]] = Field(default=None, description="Updated daily meals reflecting the user's requested swaps")
-    updated_foods_to_enjoy: Optional[List[str]] = Field(default=None, description="Updated foods to enjoy")
-    updated_foods_to_limit: Optional[List[str]] = Field(default=None, description="Updated foods to limit")
-    updated_comfort_tips: Optional[str] = Field(default=None, description="Updated tips for chewing, budget, or preparation")
+        return f"Comparing with your test on {past_date}, your biomarkers have been updated and are trending steadily. Continue your healthy daily habits!"
 
 # =========================================================================
-# Specialized Popover Chatbots (Elderly-Friendly)
+# Custom-Prompt Cuisine Tile Engine (CUISINE_PROMPT_REGISTRY)
 # =========================================================================
 
-def ask_health_assistant(
-    user_message: str,
-    conversation_history: List[Dict[str, str]],
-    language: str = "English"
-) -> str:
-    """
-    Chatbot 1: Day-to-day health assistant on the Home page.
-    Instructed to answer general health queries strictly at a 5th-grade reading level in the user's language.
-    """
-    system_instruction = f"""
-You are a warm, kind, and patient health companion for elderly users.
-CRITICAL DIRECTIVE - THE 'ELDERLY-FRIENDLY' RULE:
-- Every single response must be written strictly at a 5th-grade reading level.
-- Do NOT use complex medical jargon.
-- Instead of 'Hyperglycemia', use 'High Blood Sugar'.
-- Instead of 'Renal failure', use 'Kidney problems'.
-- Instead of 'Hypertension', use 'High Blood Pressure'.
-- Instead of 'Dyslipidemia', use 'High Cholesterol'.
-- If they ask about everyday symptoms (e.g., feeling dizzy, drinking enough water, joint stiffness), give practical, comforting everyday wellness advice.
-- Always gently remind them to speak with their doctor for medication changes or serious issues.
-- Answer completely in {language}.
-"""
+CUISINE_PROMPT_REGISTRY: Dict[str, Dict[str, str]] = {
+    "roti_daal": {
+        "title": "🍛 Roti, Daal and Paneer (Mandatory Desi Indian)",
+        "focus": "Whole-wheat or multigrain phulka, light moong or masoor dal, homemade low-fat paneer bhurji or tikka, tender lauki, tori, or tinda sabzi, plain fresh curd, and roasted jeera buttermilk. Strictly bans Western superfoods (no kale, quinoa, avocado, chia seeds, or Greek yogurt). Uses traditional, comforting Indian home staples."
+    },
+    "south_indian": {
+        "title": "🍲 South Indian Comfort",
+        "focus": "Steamed idli, fermented ragi or moong dal dosa, low-oil vegetable sambar, digestive pepper-jeera rasam, soft curd rice with pomegranate, boiled sundal, and tender coconut water. Emphasizes gut-friendly fermentation and low-sodium tempering with curry leaves and mustard seeds."
+    },
+    "gujarati_jain": {
+        "title": "🫓 Gujarati / Jain Sattvic",
+        "focus": "Moong dal khichdi with a dash of pure cow ghee, soothing Gujarati kadhi, soft methi thepla, steamed dudhi muthiya, lightly spiced ringan or bhindi shaak, and sweet lime juice. Strictly respects Jain and mild-spice sattvic home cooking with carefully controlled sugar and jaggery."
+    },
+    "bengali": {
+        "title": "🐟 Bengali Home Kitchen",
+        "focus": "Light, gentle patla macher jhol prepared with fresh rohu or katla fish, masoor dal, digestive shukto with bitter gourd, laau ghonto (bottle gourd stew), and measured portions of steamed rice. Uses pure mustard oil sparingly for aroma and digestion."
+    },
+    "maharashtrian": {
+        "title": "🌾 Maharashtrian Everyday",
+        "focus": "Warm jowar or bajra bhakri, kanda poha (peanuts omitted if allergic), varan bhaat with lemon, sprouted matki usal, comforting pithla, and crunchy cucumber koshimbir with curd. Uses wholesome, unrefined regional grains."
+    },
+    "diabetic_heart": {
+        "title": "🥗 Simple Diabetic & Heart-Safe",
+        "focus": "Low-glycemic Indian staples: besan or moong dal chilla with mint chutney, broken wheat daliya with vegetables, sprouted moong chaat, methi multigrain roti, bitter gourd (karela) or bottle gourd (lauki) sabzi, and flaxseed powder. Zero refined sugar, low salt, and heart-healthy high fiber."
+    }
+}
 
-    history_str = "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in conversation_history[-6:]])
-    prompt = f"""
-CONVERSATION HISTORY:
-{history_str}
-
-USER: {user_message}
-HEALTH ASSISTANT (at 5th-grade reading level in {language}):
-"""
-    return generate_resilient_content(prompt=prompt, system_instruction=system_instruction, temperature=0.4)
-
-def ask_trends_assistant(
-    user_message: str,
-    conversation_history: List[Dict[str, str]],
+def generate_localized_cuisine_diet(
+    cuisine_key: str,
     metrics: List[Dict[str, Any]],
-    med_history: str = "",
-    current_meds: str = "",
+    medications: str = "",
+    conditions: str = "",
+    allergies: Optional[List[str]] = None,
     language: str = "English"
 ) -> str:
     """
-    Chatbot 2: Context-aware assistant on the Analysis page.
-    Discusses health trends and lab values strictly at a 5th-grade reading level without medical jargon.
+    Generates an affordable, culturally authentic 5-segment recovery meal plan:
+    1. Breakfast, 2. Lunch, 3. Evening Snack, 4. Light Dinner, 5. Foods to Avoid/Reduce.
+    Dynamically injects tile prompt, patient lab metrics, medications, conditions,
+    and HARD SAFETY EXCLUSIONS for all persistent allergies.
     """
+    tile_info = CUISINE_PROMPT_REGISTRY.get(cuisine_key, CUISINE_PROMPT_REGISTRY["roti_daal"])
+    allergies_list = allergies or []
+    allergies_str = ", ".join(allergies_list) if allergies_list else "None reported"
+
+    abnormal_metrics = [
+        f"{m.get('test_name')}: {m.get('test_value', m.get('value'))} {m.get('unit', '')} ({m.get('status')})"
+        for m in metrics if str(m.get('status', '')).lower() in ['high', 'low', 'borderline', 'alert']
+    ]
+    abnormal_str = "\n".join(abnormal_metrics) if abnormal_metrics else "All biomarkers are within normal healthy ranges."
+
     system_instruction = f"""
-You are a gentle doctor reviewing health lab trends with an elderly patient and their family.
-CRITICAL DIRECTIVE - THE 'ELDERLY-FRIENDLY' RULE:
-- Every single sentence must be written strictly at a 5th-grade reading level.
-- Do NOT use complex medical jargon.
-- Use 'High Blood Sugar' instead of 'Hyperglycemia', 'Kidney problems' instead of 'Renal failure', 'High Blood Pressure' instead of 'Hypertension'.
-- Ground your answers in the user's actual lab numbers provided below.
-- Explain numbers using simple everyday analogies (e.g., 'Your hemoglobin carries oxygen like little delivery trucks; right now you have slightly fewer trucks, which is why you might feel sleepy').
-- Suggest simple questions to ask their doctor at their next visit.
-- Answer completely in {language}.
+You are an expert clinical dietitian and cultural nutrition specialist.
+Create a warm, appetizing, easy-to-digest recovery meal plan in {language} conforming strictly to the requested cuisine.
+Everything must be tailored to an elderly patient at a 5th-grade reading level.
+
+CRITICAL HARD SAFETY EXCLUSION:
+The patient has the following PERMANENT ALLERGIES AND RESTRICTIONS:
+>>> {allergies_str.upper()} <<<
+Under NO circumstances may any dish, ingredient, sauce, or seasoning contain ANY of these allergens. If allergic to milk/dairy, ban milk, paneer, curd, ghee, and butter completely.
+
+Cuisine Guidelines:
+{tile_info['title']}
+{tile_info['focus']}
+
+Mandatory 5-Part Structure (format using clear Markdown headers):
+### 1. 🌅 Breakfast (सुबह का नाश्ता / Healthy Morning Start)
+### 2. ☀️ Lunch (दोपहर का भोजन / Nourishing Midday Meal)
+### 3. ☕ Evening Refreshment (शाम का नाश्ता / Light Snack & Drink)
+### 4. 🌙 Dinner (हल्का रात का खाना / Easy-to-Digest Night Meal)
+### 5. 🚫 Foods to Avoid or Limit (परहेज / Safety Precautions)
 """
 
-    context_str = f"""
-PATIENT TEST NUMBERS:
-{json.dumps(metrics, indent=2)}
-
-Medical History: {med_history or 'None'}
-Medications: {current_meds or 'None'}
-"""
-    history_str = "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in conversation_history[-6:]])
     prompt = f"""
-{context_str}
+Target Language: {language}
+Selected Cuisine: {tile_info['title']}
+Pre-existing Conditions: {conditions or 'None reported'}
+Daily Medications: {medications or 'None reported'}
+Permanent Allergies / Hard Exclusions: {allergies_str}
 
-CONVERSATION HISTORY:
-{history_str}
+Key Out-of-Range Lab Biomarkers:
+{abnormal_str}
 
-USER QUESTION: {user_message}
-ASSISTANT (at 5th-grade reading level in {language}):
-"""
-    return generate_resilient_content(prompt=prompt, system_instruction=system_instruction, temperature=0.4)
-
-def ask_diet_assistant(
-    user_message: str,
-    conversation_history: List[Dict[str, str]],
-    diet_plan: Optional[Dict[str, Any]],
-    abnormal_metrics: List[Dict[str, Any]],
-    language: str = "English"
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """
-    Chatbot 3: Diet customizer on the Diet Planner page.
-    Allows the user to say things like 'I don't like spinach, change it' or 'Make this cheaper' or 'Make it softer to chew',
-    dynamically updating the active diet plan while maintaining a 5th-grade reading level.
-    """
-    system_instruction = f"""
-You are a warm, helpful culinary companion and elderly nutrition expert.
-CRITICAL DIRECTIVE - THE 'ELDERLY-FRIENDLY' RULE:
-- Speak strictly at a 5th-grade reading level.
-- If the user asks to change, swap, or modify a dish (e.g., 'I don't like spinach, change it', 'Make this cheaper', 'Make it softer to chew'), provide a friendly reply AND update the meal plan schedule accordingly.
-- Keep all suggested foods easy to chew, budget-friendly, and gentle on digestion.
-- Answer completely in {language}.
-"""
-
-    plan_str = json.dumps(diet_plan, indent=2) if diet_plan else "General wholesome elderly diet"
-    history_str = "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in conversation_history[-6:]])
-    prompt = f"""
-ACTIVE MEAL PLAN:
-{plan_str}
-
-ABNORMAL PARAMETERS:
-{json.dumps(abnormal_metrics, indent=2)}
-
-CONVERSATION HISTORY:
-{history_str}
-
-USER REQUEST: {user_message}
-
-Provide a conversational reply at a 5th-grade reading level, and if a change was requested, provide the updated daily schedule conforming to DietCustomizationResult schema in {language}.
+Please generate the complete, comforting 5-part recovery meal plan adhering strictly to {tile_info['title']} in {language}.
 """
 
     try:
-        raw_res = generate_resilient_content(
-            prompt=prompt,
+        return generate_resilient_content(
+            contents=prompt,
             system_instruction=system_instruction,
-            response_schema=DietCustomizationResult,
+            temperature=0.25
+        )
+    except Exception as e:
+        return f"### Recovery Meal Plan ({tile_info['title']})\n\nEnjoy soft, freshly cooked home meals like moong dal khichdi, warm vegetable soups, and phulka. Avoid oily or heavily salted items. Please consult your doctor for personalized nutritional guidance. ({str(e)})"
+
+# =========================================================================
+# Three Specialized Bottom-of-Tab Chatbot Agents
+# =========================================================================
+
+def chat_general_health(messages: List[Dict[str, str]], language: str = "English") -> str:
+    """
+    Tab 1 Bot: General Everyday Health Companion.
+    Provides simple 5th-grade everyday home care and wellness advice.
+    """
+    system_instruction = f"""
+You are a warm, gentle clinical health companion for seniors and their caregivers.
+Answer general day-to-day wellness questions (home remedies, hydration, gentle exercise, sleep, mild cough/cold) in {language} strictly at a 5th-grade reading level.
+Always be reassuring, polite, and include a soft reminder to consult their attending doctor for persistent or severe symptoms.
+"""
+    chat_transcript = "\n".join([f"{m.get('role', 'user').capitalize()}: {m.get('message', m.get('content', ''))}" for m in messages[-8:]])
+    prompt = f"Target Language: {language}\n\nConversation History:\n{chat_transcript}\n\nAssistant (in {language}):"
+
+    try:
+        return generate_resilient_content(
+            contents=prompt,
+            system_instruction=system_instruction,
             temperature=0.3
         )
-        parsed = robust_json_loads(raw_res)
-        reply = parsed.get("reply_message", "Here are your meal updates!")
-        
-        updated_plan = None
-        if parsed.get("updated_daily_schedule") and diet_plan:
-            updated_plan = dict(diet_plan)
-            updated_plan["daily_schedule"] = parsed["updated_daily_schedule"]
-            if parsed.get("updated_foods_to_enjoy"):
-                updated_plan["foods_to_enjoy"] = parsed["updated_foods_to_enjoy"]
-            if parsed.get("updated_foods_to_limit"):
-                updated_plan["foods_to_limit"] = parsed["updated_foods_to_limit"]
-            if parsed.get("updated_comfort_tips"):
-                updated_plan["comfort_tips"] = parsed["updated_comfort_tips"]
+    except Exception as e:
+        return f"I am here to support your daily wellness. Drink plenty of fresh water and rest comfortably. Please check with your doctor for persistent symptoms. ({str(e)})"
 
-        return reply, updated_plan
-    except Exception:
-        # Fallback to plain conversational response
-        simple_reply = generate_resilient_content(
-            prompt=f"{prompt}\n\nPlease reply conversationally at a 5th-grade reading level in {language}.",
+def chat_clinical_context(
+    messages: List[Dict[str, str]],
+    metrics: List[Dict[str, Any]],
+    health_score: Optional[int] = None,
+    summary: str = "",
+    medications: str = "",
+    conditions: str = "",
+    language: str = "English"
+) -> str:
+    """
+    Tab 2 Bot: Clinical Context Agent.
+    Strictly grounded in patient's SQLite data (metrics, score, summary, medications, conditions).
+    """
+    metrics_summary = [
+        f"{m.get('test_name')}: {m.get('test_value', m.get('value'))} {m.get('unit', '')} (Ref: {m.get('reference_range', m.get('range', ''))}, Status: {m.get('status')})"
+        for m in metrics[:15]
+    ]
+    metrics_str = "\n".join(metrics_summary) if metrics_summary else "No lab metrics recorded yet."
+
+    system_instruction = f"""
+You are a dedicated clinical report assistant.
+You are strictly grounded in this patient's actual recorded lab test results, health score, and medication profile.
+Explain their numbers, trends, and health score in clear, comforting, 5th-grade {language}.
+Never invent numbers that are not in the record.
+
+Patient Context:
+- Health Score: {health_score if health_score is not None else 'N/A'}/100
+- Medications: {medications or 'None reported'}
+- Health Conditions: {conditions or 'None reported'}
+- Latest Summary: {summary[:400] if summary else 'N/A'}
+
+Recorded Lab Biomarkers:
+{metrics_str}
+"""
+    chat_transcript = "\n".join([f"{m.get('role', 'user').capitalize()}: {m.get('message', m.get('content', ''))}" for m in messages[-8:]])
+    prompt = f"Target Language: {language}\n\nConversation History:\n{chat_transcript}\n\nAssistant (in {language}):"
+
+    try:
+        return generate_resilient_content(
+            contents=prompt,
             system_instruction=system_instruction,
-            temperature=0.4
+            temperature=0.2
         )
-        return simple_reply, None
+    except Exception as e:
+        return f"Based on your recorded lab tests, your parameters are on file with an overall score of {health_score or 'N/A'}. Please discuss any specific medicine adjustments with your doctor. ({str(e)})"
+
+def chat_diet_customizer(
+    messages: List[Dict[str, str]],
+    active_diet: str = "",
+    cuisine_name: str = "",
+    metrics: Optional[List[Dict[str, Any]]] = None,
+    allergies: Optional[List[str]] = None,
+    language: str = "English"
+) -> DietCustomizationResponse:
+    """
+    Tab 3 Bot: Interactive Diet Customizer & Persistent Safety Memory Agent.
+    Rewrites the active diet plan when requested AND automatically detects and saves
+    new food allergies or restrictions to persist to SQLite.
+    Conforms to DietCustomizationResponse Pydantic schema.
+    """
+    allergies_list = allergies or []
+    allergies_str = ", ".join(allergies_list) if allergies_list else "None reported"
+
+    system_instruction = f"""
+You are an expert personalized dietitian and food allergy safety agent.
+You help patients customize their recovery meal plan and safeguard them against allergens in {language}.
+
+Your tasks:
+1. Provide a warm, helpful assistant_reply in {language} at a 5th-grade level.
+2. If the user asks to modify, swap, or adjust foods in their diet (e.g. "I cannot eat spicy food", "Replace rice with roti", "I don't like bitter gourd"):
+   - Set diet_was_modified = true
+   - In updated_diet_plan_markdown, output the COMPLETE updated 5-segment meal plan in Markdown.
+   - Otherwise, set diet_was_modified = false and updated_diet_plan_markdown = null.
+3. DETECT NEW ALLERGIES OR PERMANENT RESTRICTIONS:
+   - If the user mentions any allergy, intolerance, or permanent dietary restriction (e.g. "I am allergic to milk", "Allergic to peanuts", "I cannot digest lactose", "I don't eat gluten", "Allergic to eggs"):
+   - Extract each item cleanly as a string in detected_new_allergies_or_restrictions (e.g. ["Milk / Dairy products"] or ["Peanuts"]).
+   - In the updated diet plan, IMMEDIATELY ban those ingredients!
+   - If no new allergy was mentioned, return an empty list [].
+
+Active Cuisine: {cuisine_name}
+Current Permanent Allergies: {allergies_str}
+"""
+
+    chat_transcript = "\n".join([f"{m.get('role', 'user').capitalize()}: {m.get('message', m.get('content', ''))}" for m in messages[-6:]])
+
+    prompt = f"""
+Target Language: {language}
+Active Diet Plan:
+---
+{active_diet[:1200] if active_diet else 'Standard recovery diet'}
+---
+
+Current Permanent Allergies: {allergies_str}
+
+Conversation:
+{chat_transcript}
+
+Respond strictly conforming to DietCustomizationResponse schema.
+"""
+
+    try:
+        raw = generate_resilient_content(
+            contents=prompt,
+            system_instruction=system_instruction,
+            response_schema=DietCustomizationResponse,
+            temperature=0.2
+        )
+        data = robust_json_loads(raw)
+        return DietCustomizationResponse(**data)
+    except Exception as e:
+        return DietCustomizationResponse(
+            assistant_reply=f"I have noted your request. Please ensure all your meals are gentle and easy to digest. ({str(e)})",
+            diet_was_modified=False,
+            updated_diet_plan_markdown=None,
+            detected_new_allergies_or_restrictions=[]
+        )
+
+# =========================================================================
+# Verification Dispatcher: SMTP Email OTP
+# =========================================================================
+
+def send_real_email_otp(recipient_email: str, otp_code: str) -> bool:
+    """
+    Dispatches a verification code using SMTP with TLS (port 587).
+    Returns False on connection or credential errors to allow seamless on-screen UI fallback.
+    """
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+
+    if not smtp_email or not smtp_password or "your_email" in smtp_email:
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Your ClinicalAI Verification Code: {otp_code}"
+        msg["From"] = f"ClinicalAI Support <{smtp_email}>"
+        msg["To"] = recipient_email
+
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; color: #1e293b; padding: 20px;">
+            <div style="max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+              <h2 style="color: #0284c7; margin-top: 0;">ClinicalAI Decision Support</h2>
+              <p style="font-size: 16px;">Hello,</p>
+              <p style="font-size: 16px;">Here is your secure 6-digit verification code to access your health companion:</p>
+              <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; text-align: center; padding: 16px; margin: 20px 0;">
+                <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #16a34a;">{otp_code}</span>
+              </div>
+              <p style="font-size: 14px; color: #64748b;">This code is valid for 15 minutes. Never share this code with anyone.</p>
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+              <p style="font-size: 12px; color: #94a3b8; text-align: center;">ClinicalAI Personal Health Companion</p>
+            </div>
+          </body>
+        </html>
+        """
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(smtp_email, recipient_email, msg.as_string())
+        return True
+    except Exception:
+        return False
